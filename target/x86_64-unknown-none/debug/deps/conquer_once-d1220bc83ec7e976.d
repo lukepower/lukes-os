@@ -1,0 +1,10 @@
+F:\Programming\rustos\target\x86_64-unknown-none\debug\deps\conquer_once-d1220bc83ec7e976.d: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs
+
+F:\Programming\rustos\target\x86_64-unknown-none\debug\deps\libconquer_once-d1220bc83ec7e976.rmeta: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs
+
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs:

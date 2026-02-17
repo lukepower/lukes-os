@@ -1,0 +1,10 @@
+F:\Programming\rustos\target\debug\deps\conquer_once-1a52b9406e5a40ff.d: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs
+
+F:\Programming\rustos\target\debug\deps\libconquer_once-1a52b9406e5a40ff.rmeta: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs
+
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lib.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\noblock.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\spin.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\cell.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\lazy.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\conquer-once-0.4.0\src\state.rs:

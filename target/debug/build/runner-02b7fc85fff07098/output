@@ -1,0 +1,3 @@
+cargo:rerun-if-changed=F:\Programming\rustos\target\x86_64-unknown-none\debug\kernel
+cargo:rustc-env=BIOS_IMAGE=F:\Programming\rustos\target\rustos-bios.img
+cargo:rustc-env=UEFI_IMAGE=F:\Programming\rustos\target\rustos-uefi.img

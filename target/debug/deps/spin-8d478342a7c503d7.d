@@ -1,0 +1,12 @@
+F:\Programming\rustos\target\debug\deps\spin-8d478342a7c503d7.d: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\barrier.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\once.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\relax.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\rwlock.rs
+
+F:\Programming\rustos\target\debug\deps\libspin-8d478342a7c503d7.rmeta: C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lib.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\barrier.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lazy.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex\spin.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\once.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\relax.rs C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\rwlock.rs
+
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lib.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\barrier.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\lazy.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\mutex\spin.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\once.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\relax.rs:
+C:\Users\interski\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\spin-0.9.8\src\rwlock.rs:

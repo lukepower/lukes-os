@@ -1,0 +1,19 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader_api = "0.11"
+uart_16550 = "0.3"
+spin = "0.9"
+x86_64 = "0.15"
+pic8259 = "0.11"
+linked_list_allocator = "0.10"
+pc-keyboard = "0.7"
+virtio-drivers = { version = "0.12", default-features = false }
+conquer-once = { version = "0.4", default-features = false }
+
+[dependencies.lazy_static]
+version = "1.5"
+features = ["spin_no_std"]
