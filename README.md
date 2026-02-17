@@ -1,6 +1,6 @@
 # Luke's OS
 
-![Luke's OS Logo](resources/img/logo.png)
+![Luke's OS Logo](target/resources/img/lukes_os_logo.png)
 
 Luke's OS is a hobby operating system written in Rust, designed to explore OS development concepts like memory management, multitasking, and driver implementation.
 
