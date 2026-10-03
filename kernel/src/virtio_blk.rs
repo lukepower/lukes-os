@@ -1,6 +1,4 @@
 use alloc::boxed::Box;
-use alloc::sync::Arc;
-use core::ptr::NonNull;
 use spin::Mutex;
 use virtio_drivers::{
     device::blk::VirtIOBlk as VirtIOBlkDriver,
@@ -23,18 +21,18 @@ impl ConfigurationAccess for PciConfig {
         *self
     }
 
-    unsafe fn read_word(&self, dev: DeviceFunction, offset: u8) -> u32 {
-        pci::config_read_u32(dev.bus, dev.device, dev.function, offset)
+    fn read_word(&self, dev: DeviceFunction, offset: u8) -> u32 {
+        unsafe { pci::config_read_u32(dev.bus, dev.device, dev.function, offset) }
     }
 
-    unsafe fn write_word(&mut self, dev: DeviceFunction, offset: u8, value: u32) {
-        pci::config_write_u32(dev.bus, dev.device, dev.function, offset, value)
+    fn write_word(&mut self, dev: DeviceFunction, offset: u8, value: u32) {
+        unsafe { pci::config_write_u32(dev.bus, dev.device, dev.function, offset, value) }
     }
 }
 
 pub fn init() {
-    let mut devices = pci::scan_bus();
-    let mut virtio_dev = None;
+    let devices = pci::scan_bus();
+    let mut _virtio_dev = None;
 
     for dev in devices {
         if dev.vendor_id == 0x1AF4 {
@@ -62,7 +60,7 @@ pub fn init() {
                          Ok(driver) => {
                              serial_println!("[OK] VirtIO-Blk driver initialized!");
                              *RAW_VIRTIO_BLK.lock() = Some(driver);
-                             virtio_dev = Some(dev);
+                             _virtio_dev = Some(dev);
                              break;
                          }
                          Err(e) => {

@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 
 #[derive(Debug)]
 pub enum BlockError {

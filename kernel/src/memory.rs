@@ -4,7 +4,7 @@ use x86_64::structures::paging::{
     FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB,
 };
 use x86_64::{PhysAddr, VirtAddr};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
 
 pub static FRAME_ALLOCATOR: Mutex<Option<BootInfoFrameAllocator>> = Mutex::new(None);
 pub static PHYS_MEM_OFFSET: AtomicU64 = AtomicU64::new(0);

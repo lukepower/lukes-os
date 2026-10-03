@@ -1,11 +1,10 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::vfs::{self, FileSystem, FileType, Inode, Metadata, Result, VfsError};
+use crate::vfs::{FileSystem, FileType, Inode, Metadata, Result, VfsError};
 
 pub struct RamFs {
     root: Arc<RamNode>,

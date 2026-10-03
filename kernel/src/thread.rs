@@ -108,7 +108,7 @@ impl Thread {
         let mut ctx = Context::empty();
         // rsp must be 16-byte aligned at function entry point per ABI
         ctx.rsp = (stack_top - 8) & !0xF;
-        ctx.rip = thread_entry_trampoline as u64;
+        ctx.rip = thread_entry_trampoline as *const () as u64;
         ctx.r15 = entry as u64; // trampoline argument
 
         Thread {
