@@ -56,17 +56,6 @@ fn main() {
         .arg("id=hd0,if=none,format=raw,file=disk.img")
         .arg("-no-reboot")
         .arg("-no-shutdown");
-
-    // Create a dummy disk image if not exists
-    if !std::path::Path::new("disk.img").exists() {
-        use std::io::Write;
-        let mut file = std::fs::File::create("disk.img").unwrap();
-        // 32 MB disk
-        file.set_len(32 * 1024 * 1024).unwrap();
-        // Write some recognizable data at the beginning
-        file.write_all(b"Hello VirtIO!").unwrap();
-    }
-
     println!("Running: {:?}", cmd);
 
     let status = cmd
