@@ -19,6 +19,7 @@ use crate::thread::Thread;
 pub const MAX_CPUS: usize = 8;
 pub const TRAMPOLINE_PHYS_ADDR: u64 = 0x8000;
 const IA32_GS_BASE_MSR: u32 = 0xC0000101;
+const IA32_KERNEL_GS_BASE_MSR: u32 = 0xC0000102;
 
 pub static CORES_ONLINE: AtomicUsize = AtomicUsize::new(1);
 static AP_BOOT_LOCK: TicketLock<()> = TicketLock::new(());
@@ -89,6 +90,8 @@ pub fn init_bsp(bsp_lapic_id: u8) {
 
         let mut msr = Msr::new(IA32_GS_BASE_MSR);
         msr.write(ptr as u64);
+        let mut kernel_gs_msr = Msr::new(IA32_KERNEL_GS_BASE_MSR);
+        kernel_gs_msr.write(0);
     }
 }
 
@@ -299,6 +302,8 @@ extern "C" fn ap_entry(core_id: u64) -> ! {
         let ptr = PER_CPU_DATA[core_id].as_mut().unwrap() as *mut PerCpu;
         let mut msr = Msr::new(IA32_GS_BASE_MSR);
         msr.write(ptr as u64);
+        let mut kernel_gs_msr = Msr::new(IA32_KERNEL_GS_BASE_MSR);
+        kernel_gs_msr.write(0);
     }
 
     // Initialize Local APIC on this AP

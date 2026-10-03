@@ -59,6 +59,8 @@ pub struct Thread {
     pub state: ThreadState,
     /// Stack pointer where Context is saved
     pub saved_rsp: u64,
+    /// Kernel stack top (for TSS RSP0 and GS:[8] switching)
+    pub kernel_stack_top: u64,
     /// Preferred or current running CPU core
     pub core_id: usize,
     /// Heap-allocated kernel stack
@@ -124,6 +126,56 @@ impl Thread {
             name,
             state: ThreadState::Ready,
             saved_rsp: ctx_ptr as u64,
+            kernel_stack_top: stack_top,
+            core_id: 0,
+            _stack: Some(stack),
+        }
+    }
+
+    pub fn new_user(name: &'static str, entry: u64, user_stack_top: u64) -> Self {
+        let id = ThreadId::new();
+
+        let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
+        let stack_top = (stack.as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
+
+        let ctx_size = core::mem::size_of::<Context>() as u64;
+        let ctx_ptr = (stack_top - ctx_size) as *mut Context;
+
+        let ctx = Context {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rdi: 0,
+            rsi: 0,
+            rbp: 0,
+            rbx: 0,
+            rdx: 0,
+            rcx: 0,
+            rax: 0,
+
+            // Ring 3 interrupt frame
+            rip: entry,
+            cs: 0x20 | 3,  // User code selector
+            rflags: 0x202, // IF=1
+            rsp: user_stack_top,
+            ss: 0x18 | 3,  // User data selector
+        };
+
+        unsafe {
+            core::ptr::write(ctx_ptr, ctx);
+        }
+
+        Thread {
+            id,
+            name,
+            state: ThreadState::Ready,
+            saved_rsp: ctx_ptr as u64,
+            kernel_stack_top: stack_top,
             core_id: 0,
             _stack: Some(stack),
         }
@@ -135,6 +187,7 @@ impl Thread {
             name,
             state: ThreadState::Running,
             saved_rsp: 0,
+            kernel_stack_top: 0,
             core_id,
             _stack: None,
         }

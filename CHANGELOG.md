@@ -21,10 +21,57 @@ This document serves as the persistent progress log and architectural changelog 
   - Fast system call interface via `SYSCALL`/`SYSRET` MSR configuration (`EFER.SCE`, `LSTAR`, `STAR`, `FMASK`).
   - ELF64 executable loader (`kernel/src/elf.rs`), program header mapper (`PT_LOAD`), user stack allocation.
   - Shell commands `exec`/`run` and `syscall-test`.
+- [x] **Phase 5: Graphical User Interface & User Space Hardening**
+  - M0: User mode correctness fixes (GS base handling, Ring 3 interrupts swapgs, user pointer validation, non-hijacking process spawning).
+  - M1: Display and BackBuffer abstractions, `embedded-graphics` DrawTarget, PS/2 mouse driver (IRQ12), unified input event system, kernel window compositor ("wm"), draggable windows, taskbar, software cursor, and in-window terminal shell.
 
 ---
 
 ## Detailed Milestone Log
+
+### [2026-10-03] Phase 5: Graphical User Interface & User Mode Hardening (M0 & M1)
+
+#### 1. User Mode Correctness & Process Spawning (M0)
+- **GS Base & Interrupt Trampoline Isolation (`smp.rs`, `scheduler.rs`, `elf.rs`)**:
+  - Configured `IA32_KERNEL_GS_BASE = 0` on BSP and secondary AP cores.
+  - Updated `timer_interrupt_asm` to detect RPL 3 interrupt frames (`test qword ptr [rsp + 8], 3`) and execute `swapgs` on entry and exit.
+  - Added `swapgs` prior to `iretq` in `user_jump_trampoline`.
+- **ELF Segment Validation & Memory Map Checking (`elf.rs`)**:
+  - Enforced valid virtual address bounds for user segments (`0x0040_0000 .. 0x0000_7FFF_0000_0000`), rejecting invalid addresses with `ElfError::InvalidVaddr`.
+  - Replaced silent map failures with propagated `ElfError::MapFailed`.
+- **User Pointer Validation & System Call Safety (`syscall.rs`)**:
+  - Implemented `user_slice(ptr, len)` and `user_slice_mut(ptr, len)` checking address boundaries (< `USER_ADDR_LIMIT`), page accessibility via paging translation, and returning negative POSIX error codes (`EFAULT`, `EINVAL`, `ENOENT`, `ENOSYS`).
+- **Scheduler-Managed Process Spawning (`scheduler.rs`, `thread.rs`)**:
+  - Implemented `scheduler::spawn_user(name, entry, user_stack_top)` creating a dedicated thread with User Segment selectors and kernel stack.
+  - `cmd_exec` spawns the user process and immediately prints the assigned TID without hijacking the interactive shell thread.
+
+#### 2. Display Engine & Double Buffering (M1)
+- **Display Abstraction (`gfx/display.rs`)**:
+  - Decoupled video memory management from the text console.
+  - Added `Display` abstraction over bootloader framebuffer supporting RGB/BGR pixel formats.
+- **Physical Contiguous BackBuffer (`gfx/backbuffer.rs`, `gfx/rect.rs`)**:
+  - Allocated contiguous physical frames mapped at `0x4444_8000_0000`.
+  - Implemented `present()` copying dirty bounding regions row-wise via `copy_nonoverlapping`.
+  - Implemented `embedded_graphics::draw_target::DrawTarget` for `BackBuffer` with fast solid and contiguous rectangular fills.
+
+#### 3. PS/2 Mouse Driver & Unified Input System (`mouse.rs`, `input.rs`)
+- **PS/2 Auxiliary Device Driver (`mouse.rs`, `interrupts.rs`)**:
+  - Programmed i8042 controller (aux enable `0xA8`, streaming `0xF4`, defaults `0xF6`).
+  - Unmasked IRQ12 on slave PIC and IRQ2 cascade on master PIC.
+  - Assembled 3-byte packets, verified sign/overflow bits, and dispatched normalized mouse motion and button events.
+- **Unified Input Queue (`input.rs`)**:
+  - Decoupled input queue buffering `InputEvent` records for keyboard and mouse.
+
+#### 4. Kernel Window Compositor & Terminal Integration (`gfx/wm.rs`, `vga.rs`, `shell.rs`)
+- **Compositor Thread (`"wm"`)**:
+  - Z-ordered window rendering, active/inactive title bars, close buttons, and outer borders.
+  - Interactive mouse click-to-focus and title-bar dragging.
+  - Bottom taskbar featuring "Luke's OS" menu button, window tabs, and live system uptime clock.
+  - 12×18 software mouse cursor pointer rendered on top.
+- **Console in a Window & Shell Commands**:
+  - Terminal console renders directly into the active Terminal window content buffer in GUI mode.
+  - Added shell commands `gui` (activate graphical desktop), `text` (return to full-screen console), and `about` (display Luke's OS dialog window).
+
 
 ### [2026-10-03] Phase 4: User Space Isolation, System Calls & ELF Loader
 

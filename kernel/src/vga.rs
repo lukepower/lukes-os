@@ -7,7 +7,7 @@ use spin::Mutex;
 
 /// 8x16 bitmap font — ASCII + German/European extensions.
 /// Each glyph is 16 bytes (one byte per row, 8 pixels wide).
-mod font {
+pub mod font {
     pub const GLYPH_HEIGHT: usize = 16;
     pub const GLYPH_WIDTH: usize = 8;
 
@@ -322,25 +322,28 @@ const BG_R: u8 = 0x00;
 const BG_G: u8 = 0x00;
 const BG_B: u8 = 0x00;
 
-/// Initialize the framebuffer console from bootloader BootInfo.
-pub fn init(framebuffer: &'static mut bootloader_api::info::FrameBuffer) {
-    let info = framebuffer.info();
-    let buf = framebuffer.buffer_mut();
+/// Initialize the framebuffer console.
+pub fn init() {
+    let display_guard = crate::gfx::DISPLAY.lock();
+    let display = match display_guard.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
 
-    let cols = info.width / font::GLYPH_WIDTH;
-    let rows = info.height / font::GLYPH_HEIGHT;
+    let cols = display.width / font::GLYPH_WIDTH;
+    let rows = display.height / font::GLYPH_HEIGHT;
 
     // Clear screen to black
-    for byte in buf.iter_mut() {
-        *byte = 0;
+    unsafe {
+        core::ptr::write_bytes(display.front, 0, display.height * display.pitch);
     }
 
     let fb_info = FbInfo {
-        buffer: buf.as_mut_ptr(),
-        pitch: info.stride * info.bytes_per_pixel,
-        width: info.width,
-        height: info.height,
-        bytes_per_pixel: info.bytes_per_pixel,
+        buffer: display.front,
+        pitch: display.pitch,
+        width: display.width,
+        height: display.height,
+        bytes_per_pixel: display.bpp,
         cols,
         rows,
     };
@@ -353,11 +356,23 @@ pub fn init(framebuffer: &'static mut bootloader_api::info::FrameBuffer) {
 
 /// Clears the entire framebuffer console to black and resets cursor to (0, 0).
 pub fn clear_screen() {
-    let mut guard = FB_INFO.lock();
-    if let Some(fb) = guard.as_mut() {
-        let total_bytes = fb.rows * font::GLYPH_HEIGHT * fb.pitch;
-        unsafe {
-            core::ptr::write_bytes(fb.buffer, 0, total_bytes);
+    if crate::gfx::wm::GUI_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+        let mut wm = crate::gfx::wm::WM.lock();
+        if let Some(win) = wm.windows.iter_mut().find(|w| w.id == 1) {
+            win.content.fill(0x00121212);
+        }
+    } else if let Some(mut bb_guard) = crate::gfx::BACKBUFFER.try_lock() {
+        if let Some(ref mut bb) = bb_guard.as_mut() {
+            bb.clear(0x00000000);
+            bb.present();
+        }
+    } else {
+        let mut guard = FB_INFO.lock();
+        if let Some(fb) = guard.as_mut() {
+            let total_bytes = fb.rows * font::GLYPH_HEIGHT * fb.pitch;
+            unsafe {
+                core::ptr::write_bytes(fb.buffer, 0, total_bytes);
+            }
         }
     }
     COL.store(0, core::sync::atomic::Ordering::Relaxed);
@@ -365,16 +380,88 @@ pub fn clear_screen() {
 }
 
 fn put_pixel(fb: &FbInfo, x: usize, y: usize, r: u8, g: u8, b: u8) {
+    if crate::gfx::wm::GUI_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(mut bb_guard) = crate::gfx::BACKBUFFER.try_lock() {
+        if let Some(ref mut bb) = bb_guard.as_mut() {
+            let color = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+            bb.put_pixel(x, y, color);
+            return;
+        }
+    }
+
     if x >= fb.width || y >= fb.height {
         return;
     }
     let offset = y * fb.pitch + x * fb.bytes_per_pixel;
     unsafe {
         let ptr = fb.buffer.add(offset);
-        // Framebuffer is typically BGR or RGB; bootloader uses BGR by default
         core::ptr::write_volatile(ptr, b);
         core::ptr::write_volatile(ptr.add(1), g);
         core::ptr::write_volatile(ptr.add(2), r);
+    }
+}
+
+fn draw_char_window(win: &mut crate::gfx::wm::Window, ch: char, col: usize, row: usize) {
+    let glyph = font::glyph(ch);
+    let x0 = col * font::GLYPH_WIDTH;
+    let y0 = row * font::GLYPH_HEIGHT;
+    let w = win.content_width as usize;
+    let h = win.content_height as usize;
+
+    for (dy, &glyph_row) in glyph.iter().enumerate() {
+        let py = y0 + dy;
+        if py >= h {
+            continue;
+        }
+        for dx in 0..font::GLYPH_WIDTH {
+            let px = x0 + dx;
+            if px >= w {
+                continue;
+            }
+            let lit = (glyph_row >> (7 - dx)) & 1 != 0;
+            let color = if lit { 0x0000FF00 } else { 0x00121212 };
+            let idx = py * w + px;
+            if idx < win.content.len() {
+                win.content[idx] = color;
+            }
+        }
+    }
+}
+
+fn clear_char_window(win: &mut crate::gfx::wm::Window, col: usize, row: usize) {
+    let x0 = col * font::GLYPH_WIDTH;
+    let y0 = row * font::GLYPH_HEIGHT;
+    let w = win.content_width as usize;
+    let _h = win.content_height as usize;
+
+    for dy in 0..font::GLYPH_HEIGHT {
+        let py = y0 + dy;
+        if py >= _h {
+            continue;
+        }
+        for dx in 0..font::GLYPH_WIDTH {
+            let px = x0 + dx;
+            if px >= w {
+                continue;
+            }
+            let idx = py * w + px;
+            if idx < win.content.len() {
+                win.content[idx] = 0x00121212;
+            }
+        }
+    }
+}
+
+fn scroll_up_window(win: &mut crate::gfx::wm::Window) {
+    let w = win.content_width as usize;
+    let _h = win.content_height as usize;
+    let row_pixels = font::GLYPH_HEIGHT * w;
+    if row_pixels < win.content.len() {
+        win.content.copy_within(row_pixels.., 0);
+        let start_clear = win.content.len() - row_pixels;
+        win.content[start_clear..].fill(0x00121212);
     }
 }
 
@@ -408,6 +495,23 @@ fn clear_char(fb: &FbInfo, col: usize, row: usize) {
 }
 
 fn scroll_up(fb: &FbInfo) {
+    if let Some(mut bb_guard) = crate::gfx::BACKBUFFER.try_lock() {
+        if let Some(ref mut bb) = bb_guard.as_mut() {
+            let bb_w = bb.width();
+            let row_pixels = font::GLYPH_HEIGHT * bb_w;
+            let total_pixels = fb.rows * row_pixels;
+            let slice = bb.buffer_slice_mut();
+            if row_pixels < slice.len() {
+                slice.copy_within(row_pixels..total_pixels, 0);
+                let last_row_start = (fb.rows - 1) * row_pixels;
+                slice[last_row_start..total_pixels].fill(0);
+                bb.mark_dirty(crate::gfx::Rect::new(0, 0, bb_w as u32, (fb.rows * font::GLYPH_HEIGHT) as u32));
+                bb.present();
+            }
+            return;
+        }
+    }
+
     let row_bytes = font::GLYPH_HEIGHT * fb.pitch;
     let total_text_bytes = fb.rows * row_bytes;
 
@@ -428,6 +532,57 @@ pub struct Writer;
 
 impl Writer {
     pub fn write_char(&mut self, ch: char) {
+        if crate::gfx::wm::GUI_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+            let mut wm = crate::gfx::wm::WM.lock();
+            if let Some(win) = wm.windows.iter_mut().find(|w| w.id == 1) {
+                let cols = (win.content_width as usize) / font::GLYPH_WIDTH;
+                let rows = (win.content_height as usize) / font::GLYPH_HEIGHT;
+                let mut col = COL.load(core::sync::atomic::Ordering::Relaxed);
+                let mut row = ROW.load(core::sync::atomic::Ordering::Relaxed);
+
+                match ch {
+                    '\n' => {
+                        col = 0;
+                        row += 1;
+                    }
+                    '\r' => {
+                        col = 0;
+                    }
+                    '\x08' => {
+                        if col > 0 {
+                            col -= 1;
+                            clear_char_window(win, col, row);
+                        } else if row > 0 {
+                            row -= 1;
+                            col = cols.saturating_sub(1);
+                            clear_char_window(win, col, row);
+                        }
+                    }
+                    ch => {
+                        if col >= cols {
+                            col = 0;
+                            row += 1;
+                        }
+                        if row >= rows {
+                            scroll_up_window(win);
+                            row = rows.saturating_sub(1);
+                        }
+                        draw_char_window(win, ch, col, row);
+                        col += 1;
+                    }
+                }
+
+                if row >= rows {
+                    scroll_up_window(win);
+                    row = rows.saturating_sub(1);
+                }
+
+                COL.store(col, core::sync::atomic::Ordering::Relaxed);
+                ROW.store(row, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        }
+
         let mut guard = FB_INFO.lock();
         let fb = match guard.as_mut() {
             Some(fb) => fb,
@@ -477,6 +632,12 @@ impl Writer {
 
         COL.store(col, core::sync::atomic::Ordering::Relaxed);
         ROW.store(row, core::sync::atomic::Ordering::Relaxed);
+
+        if let Some(mut bb_guard) = crate::gfx::BACKBUFFER.try_lock() {
+            if let Some(ref mut bb) = bb_guard.as_mut() {
+                bb.present();
+            }
+        }
     }
 }
 

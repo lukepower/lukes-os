@@ -55,6 +55,8 @@ pub enum ElfError {
     MalformedHeader,
     AllocationFailed,
     IoError,
+    MapFailed(Page<Size4KiB>),
+    InvalidVaddr(u64),
 }
 
 /// Parsed ELF binary representation.
@@ -147,6 +149,12 @@ fn load_segment(
 ) -> Result<(), ElfError> {
     let start_vaddr = ph.p_vaddr;
     let end_vaddr = start_vaddr + ph.p_memsz;
+
+    // Reject segments with p_vaddr outside 0x0000_0000_0040_0000 .. 0x0000_7FFF_0000_0000
+    if start_vaddr < 0x0040_0000 || end_vaddr > 0x0000_7FFF_0000_0000 {
+        return Err(ElfError::InvalidVaddr(start_vaddr));
+    }
+
     let start_page = Page::containing_address(VirtAddr::new(start_vaddr));
     let end_page = Page::containing_address(VirtAddr::new(end_vaddr.saturating_sub(1)));
 
@@ -182,9 +190,10 @@ fn load_segment(
         }
 
         unsafe {
-            if let Ok(map) = mapper.map_to(page, frame, flags, frame_allocator) {
-                map.flush();
-            }
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .map_err(|_| ElfError::MapFailed(page))?
+                .flush();
         }
 
         // Copy matching segment data if within range
@@ -229,6 +238,7 @@ unsafe extern "C" fn user_jump_trampoline(
         "push rdx", // rflags
         "push rsi", // cs
         "push rdi", // rip
+        "swapgs",
         "iretq",
     );
 }
@@ -255,8 +265,8 @@ pub unsafe fn enter_user_mode(entry_point: u64, user_rsp: u64) -> ! {
     user_jump_trampoline(entry_point, user_cs, rflags, user_rsp, user_ss);
 }
 
-/// Load an ELF binary by VFS path and execute in Ring 3.
-pub fn spawn_user_process(path: &str) -> Result<(), &'static str> {
+/// Load an ELF binary by VFS path and execute in Ring 3 as a scheduler thread.
+pub fn spawn_user_process(path: &str) -> Result<crate::thread::ThreadId, &'static str> {
     let mut handle = vfs::open(path, vfs::OpenFlags::READ).map_err(|_| "Failed to open file")?;
     let meta = handle.metadata().map_err(|_| "Failed to read metadata")?;
     let mut buffer = alloc::vec![0u8; meta.size as usize];
@@ -271,7 +281,10 @@ pub fn spawn_user_process(path: &str) -> Result<(), &'static str> {
 
     drop(frame_guard);
 
-    unsafe {
-        enter_user_mode(loaded.entry_point, loaded.user_stack_top);
-    }
+    let tid = crate::scheduler::spawn_user("user_proc", loaded.entry_point, loaded.user_stack_top);
+    serial_println!(
+        "[USER] Spawned user thread TID={} for '{}': RIP=0x{:X}, RSP=0x{:X}",
+        tid.0, path, loaded.entry_point, loaded.user_stack_top
+    );
+    Ok(tid)
 }

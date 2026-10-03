@@ -86,7 +86,27 @@
 - **ELF64 Executable Loader (`kernel/src/elf.rs`)**:
   - Parses ELF64 binary format, validates magic and headers, and maps `PT_LOAD` segments with paging flags.
   - Allocates and maps 32 KiB user stack at `0x0000_7FFF_FFFF_0000`.
-  - `enter_user_mode` executes `iretq` frame transition to drop into Ring 3 with User Code/Data segments.
+  - Spawns ring-3 processes as preemptive scheduler-managed threads with dedicated kernel stack switching.
+
+### 7. Graphical User Interface (GUI) & Window Compositor
+- **Display & BackBuffer Engine (`kernel/src/gfx/`)**:
+  - `Display` abstraction over bootloader framebuffer memory supporting RGB and BGR pixel formats.
+  - Double-buffered `BackBuffer` backed by contiguous physical frames with row-wise fast bitblt transfers and bounding-box dirty damage tracking (`present`).
+  - Integration with `embedded-graphics` (v0.8) implementing `DrawTarget` for software rendering.
+- **PS/2 Mouse Driver (`kernel/src/mouse.rs`)**:
+  - i8042 auxiliary device streaming mode enabled with packet assembly and signed delta computation.
+  - Unmasked IRQ12 on slave PIC and IRQ2 cascade on master PIC.
+  - Pushes normalized relative movement and click events to the unified input queue.
+- **Unified Input Queue (`kernel/src/input.rs`)**:
+  - Interrupt-safe FIFO ring buffer for combined keyboard and mouse events (`MouseMove`, `MouseButton`, `Key`, `Scroll`).
+- **Kernel Window Compositor (`kernel/src/gfx/wm.rs`)**:
+  - Dedicated `"wm"` scheduler thread running desktop composition.
+  - Window frame decorations: title bars, active/inactive focus highlighting, close buttons, borders, and per-window pixel buffers.
+  - Interactive window movement by clicking and dragging title bars.
+  - Desktop taskbar with start button, window task tabs, and real-time uptime clock.
+  - Software mouse cursor rendering (12x18 arrow pointer) with pixel restoration.
+  - Shell terminal runs inside a dedicated desktop window ("Terminal") with `gui`, `text`, and `about` commands.
+
 
 ---
 

@@ -18,6 +18,63 @@ pub const SYS_CLOSE: u64 = 5;
 pub const SYS_GETPID: u64 = 6;
 pub const SYS_UNAME: u64 = 7;
 
+// POSIX error codes (negative)
+pub const ENOENT: i64 = -2;
+pub const EFAULT: i64 = -14;
+pub const EINVAL: i64 = -22;
+pub const ENOSYS: i64 = -38;
+
+pub const USER_ADDR_LIMIT: u64 = 0x0000_8000_0000_0000;
+
+pub fn user_slice(ptr: u64, len: usize) -> Result<&'static [u8], i64> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    let end = ptr.checked_add(len as u64).ok_or(EFAULT)?;
+    if end > USER_ADDR_LIMIT || ptr < 0x0040_0000 {
+        return Err(EFAULT);
+    }
+    // Walk pages and ensure they are mapped and accessible
+    let offset = crate::memory::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let mapper = unsafe { crate::memory::init(x86_64::VirtAddr::new(offset)) };
+    use x86_64::structures::paging::Translate;
+
+    let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::VirtAddr::new(ptr));
+    let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::VirtAddr::new(end - 1));
+
+    for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        if mapper.translate_addr(page.start_address()).is_none() {
+            return Err(EFAULT);
+        }
+    }
+
+    Ok(unsafe { core::slice::from_raw_parts(ptr as *const u8, len) })
+}
+
+pub fn user_slice_mut(ptr: u64, len: usize) -> Result<&'static mut [u8], i64> {
+    if len == 0 {
+        return Ok(&mut []);
+    }
+    let end = ptr.checked_add(len as u64).ok_or(EFAULT)?;
+    if end > USER_ADDR_LIMIT || ptr < 0x0040_0000 {
+        return Err(EFAULT);
+    }
+    let offset = crate::memory::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let mapper = unsafe { crate::memory::init(x86_64::VirtAddr::new(offset)) };
+    use x86_64::structures::paging::Translate;
+
+    let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::VirtAddr::new(ptr));
+    let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::VirtAddr::new(end - 1));
+
+    for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        if mapper.translate_addr(page.start_address()).is_none() {
+            return Err(EFAULT);
+        }
+    }
+
+    Ok(unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len) })
+}
+
 /// Initialize the fast system call (SYSCALL / SYSRET) hardware extension.
 pub fn init() {
     unsafe {
@@ -143,25 +200,24 @@ extern "C" fn syscall_dispatcher(
             // arg2: ptr to buffer
             // arg3: len
             let fd = arg1;
-            let ptr = arg2 as *const u8;
+            let ptr = arg2;
             let len = arg3 as usize;
 
-            if ptr.is_null() || len == 0 {
-                return 0;
-            }
+            let slice = match user_slice(ptr, len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
 
-            // In user mode, safety check could be done via page tables
-            let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
             if fd == 1 || fd == 2 {
                 if let Ok(s) = core::str::from_utf8(slice) {
                     crate::print!("{}", s);
                     crate::serial_print!("{}", s);
                     len as i64
                 } else {
-                    -1
+                    EINVAL
                 }
             } else {
-                -1 // Other FDs handled via VFS handle table if added
+                EINVAL
             }
         }
         SYS_READ => {
@@ -169,17 +225,20 @@ extern "C" fn syscall_dispatcher(
             // arg2: ptr to buffer
             // arg3: len
             let fd = arg1;
-            let ptr = arg2 as *mut u8;
+            let ptr = arg2;
             let len = arg3 as usize;
 
-            if fd == 0 && !ptr.is_null() && len > 0 {
+            let slice = match user_slice_mut(ptr, len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+
+            if fd == 0 && !slice.is_empty() {
                 let ch = crate::keyboard::read_char();
-                unsafe {
-                    *ptr = ch as u8;
-                }
+                slice[0] = ch as u8;
                 1
             } else {
-                -1
+                EINVAL
             }
         }
         SYS_GETPID => {
@@ -188,26 +247,32 @@ extern "C" fn syscall_dispatcher(
         }
         SYS_UNAME => {
             // arg1: pointer to buffer
-            let ptr = arg1 as *mut u8;
+            let ptr = arg1;
             let len = arg2 as usize;
             let name = b"Luke's OS 0.2.0 (x86_64 SMP)";
-            if !ptr.is_null() && len >= name.len() {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(name.as_ptr(), ptr, name.len());
-                }
+
+            let slice = match user_slice_mut(ptr, len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+
+            if slice.len() >= name.len() {
+                slice[..name.len()].copy_from_slice(name);
                 name.len() as i64
             } else {
-                -1
+                EINVAL
             }
         }
         SYS_OPEN => {
             // arg1: path ptr, arg2: len, arg3: write (0=read, 1=write)
-            let path_ptr = arg1 as *const u8;
+            let path_ptr = arg1;
             let path_len = arg2 as usize;
-            if path_ptr.is_null() {
-                return -1;
-            }
-            let slice = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+
+            let slice = match user_slice(path_ptr, path_len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+
             if let Ok(path) = core::str::from_utf8(slice) {
                 let flags = if arg3 == 1 {
                     vfs::OpenFlags::CREATE_OR_TRUNCATE
@@ -216,15 +281,15 @@ extern "C" fn syscall_dispatcher(
                 };
                 match vfs::open(path, flags) {
                     Ok(_) => 3, // Dummy FD index for prototype
-                    Err(_) => -1,
+                    Err(_) => ENOENT,
                 }
             } else {
-                -1
+                EINVAL
             }
         }
         _ => {
             serial_println!("[SYSCALL] Unknown syscall: {}", num);
-            -38 // ENOSYS
+            ENOSYS
         }
     }
 }

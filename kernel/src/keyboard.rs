@@ -22,12 +22,21 @@ pub static KEYBOARD: Mutex<Keyboard<layouts::De105Key, ScancodeSet1>> = Mutex::n
 pub fn process_scancode(scancode: u8) -> Option<char> {
     let mut kb = KEYBOARD.lock();
     if let Ok(Some(key_event)) = kb.add_byte(scancode) {
-        if let Some(key) = kb.process_keyevent(key_event) {
-            return match key {
-                DecodedKey::Unicode(c) => Some(c),
-                DecodedKey::RawKey(_) => None, // function keys, arrows, etc.
-            };
-        }
+        let code = key_event.code;
+        let pressed = key_event.state == pc_keyboard::KeyState::Down;
+        let decoded = kb.process_keyevent(key_event);
+        let ch = match decoded {
+            Some(DecodedKey::Unicode(c)) => Some(c),
+            _ => None,
+        };
+
+        crate::input::push_event(crate::input::InputEvent::Key {
+            ch,
+            code,
+            pressed,
+        });
+
+        return ch;
     }
     None
 }

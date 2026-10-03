@@ -27,6 +27,9 @@ mod smp;
 mod shell;
 mod syscall;
 mod elf;
+pub mod gfx;
+pub mod mouse;
+pub mod input;
 
 use alloc::{string::String, vec, vec::Vec};
 use bootloader_api::{config::Mapping, entry_point, BootInfo};
@@ -62,7 +65,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             "[OK] Framebuffer: {}x{} ({} bpp)",
             info.width, info.height, info.bytes_per_pixel * 8
         );
-        vga::init(framebuffer);
+        gfx::display::init(framebuffer);
+        vga::init();
     } else {
         serial_println!("[WARN] No framebuffer available — VGA output disabled");
     }
@@ -96,6 +100,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let frame_allocator = frame_allocator_guard.as_mut().expect("frame allocator not initialized");
         allocator::init_heap(&mut mapper, frame_allocator)
             .expect("heap initialization failed");
+    }
+
+    // ── BackBuffer ──
+    {
+        let mut frame_guard = memory::FRAME_ALLOCATOR.lock();
+        let frame_allocator = frame_guard.as_mut().expect("frame allocator missing");
+        gfx::backbuffer::init(&mut mapper, frame_allocator);
     }
 
     // ── Memory diagnostics ──
@@ -273,6 +284,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // ── Interactive Shell Thread ──
     scheduler::spawn("shell", || {
         shell::shell_main();
+    });
+
+    // ── PS/2 Mouse & Window Manager (M1) ──
+    mouse::init();
+    interrupts::unmask_mouse();
+
+    // Create Terminal window (ID=1) for shell
+    let _term_id = gfx::wm::create_window("Terminal", 40, 40, 640, 400, false);
+    const GUI_ON_BOOT: bool = true;
+    if GUI_ON_BOOT {
+        gfx::wm::GUI_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    scheduler::spawn("wm", || {
+        gfx::wm::wm_thread_main();
     });
 
     // ── Enable interrupts on BSP ──

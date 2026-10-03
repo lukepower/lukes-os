@@ -18,6 +18,7 @@ pub static PICS: spin::Mutex<ChainedPics> =
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
+    Mouse = (PIC_2_OFFSET + 4),
 }
 
 impl InterruptIndex {
@@ -45,6 +46,7 @@ lazy_static! {
         }
 
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Mouse.as_u8()].set_handler_fn(mouse_interrupt_handler);
         idt[apic::SPURIOUS_INTERRUPT_VECTOR].set_handler_fn(spurious_interrupt_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt
@@ -114,5 +116,28 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+    }
+}
+
+extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::mouse::handle_interrupt();
+
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
+    }
+}
+
+pub fn unmask_mouse() {
+    unsafe {
+        // Master PIC: unmask IRQ2 (cascade)
+        let mut master_port = x86_64::instructions::port::Port::<u8>::new(0x21);
+        let master_mask = master_port.read();
+        master_port.write(master_mask & !(1 << 2));
+
+        // Slave PIC: unmask IRQ12 (bit 4 on slave PIC, port 0xA1)
+        let mut slave_port = x86_64::instructions::port::Port::<u8>::new(0xA1);
+        let slave_mask = slave_port.read();
+        slave_port.write(slave_mask & !(1 << 4));
     }
 }

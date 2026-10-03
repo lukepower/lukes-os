@@ -37,6 +37,23 @@ pub fn spawn(name: &'static str, entry: fn()) {
     }
 }
 
+pub fn spawn_user(name: &'static str, entry: u64, user_stack_top: u64) -> ThreadId {
+    let mut thread = Box::new(Thread::new_user(name, entry, user_stack_top));
+    let tid = thread.id;
+
+    let num_cores = CORES_ONLINE.load(Ordering::Acquire).max(1);
+    let target_core = NEXT_SPAWN_CORE.fetch_add(1, Ordering::Relaxed) % num_cores;
+    thread.core_id = target_core;
+
+    if let Some(target_percpu) = PerCpu::get(target_core) {
+        target_percpu.run_queue.lock().push_back(thread);
+        if target_core != 0 {
+            apic::send_reschedule_ipi(target_percpu.lapic_id);
+        }
+    }
+    tid
+}
+
 pub fn current_thread_id() -> ThreadId {
     let percpu = PerCpu::current();
     percpu
@@ -122,6 +139,12 @@ pub fn list_threads() -> Vec<ThreadInfo> {
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_interrupt_asm() {
     core::arch::naked_asm!(
+        // Check if coming from Ring 3 (saved CS at [rsp + 8] has bottom 2 bits != 0)
+        "test qword ptr [rsp + 8], 3",
+        "jz 1f",
+        "swapgs",
+        "1:",
+
         "push rax",
         "push rcx",
         "push rdx",
@@ -157,6 +180,12 @@ pub unsafe extern "C" fn timer_interrupt_asm() {
         "pop rdx",
         "pop rcx",
         "pop rax",
+
+        // Check if returning to Ring 3 (saved CS at [rsp + 8] has bottom 2 bits != 0)
+        "test qword ptr [rsp + 8], 3",
+        "jz 2f",
+        "swapgs",
+        "2:",
 
         "iretq",
         schedule_tick = sym schedule_tick,
@@ -218,6 +247,10 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
     };
 
     let next_rsp = thread_to_run.saved_rsp;
+    if thread_to_run.kernel_stack_top != 0 {
+        percpu.kernel_syscall_stack = thread_to_run.kernel_stack_top;
+        crate::gdt::set_rsp0(my_core, x86_64::VirtAddr::new(thread_to_run.kernel_stack_top));
+    }
     percpu.current_thread = Some(thread_to_run);
 
     next_rsp

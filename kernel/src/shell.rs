@@ -51,6 +51,9 @@ fn execute_command(input: &str, cwd: &mut String) {
         "exec" | "run" => cmd_exec(args.get(0).copied(), cwd),
         "syscall-test" => cmd_syscall_test(),
         "uname" => cmd_uname(),
+        "gui" => cmd_gui(),
+        "text" => cmd_text(),
+        "about" => cmd_about(),
         _ => {
             crate::println!("Unknown command: '{}'. Type 'help' for available commands.", command);
         }
@@ -77,6 +80,9 @@ fn cmd_help() {
     crate::println!("  syscall-test - Execute userspace syscall demonstration");
     crate::println!("  echo [text]  - Echo text back to console");
     crate::println!("  uname        - Display OS system information");
+    crate::println!("  gui          - Switch to Graphical Window Manager desktop");
+    crate::println!("  text         - Return to full-screen text console mode");
+    crate::println!("  about        - Open Luke's OS About dialog window");
 }
 
 fn cmd_clear() {
@@ -362,7 +368,9 @@ fn cmd_exec(path: Option<&str>, cwd: &str) {
     let full_path = combine_path(cwd, p);
     crate::println!("Loading ELF binary from '{}'...", full_path);
     match crate::elf::spawn_user_process(&full_path) {
-        Ok(_) => {}
+        Ok(tid) => {
+            crate::println!("Spawned user process with TID={}", tid.0);
+        }
         Err(e) => {
             crate::println!("Execution failed: {}", e);
         }
@@ -391,4 +399,63 @@ fn cmd_syscall_test() {
 
 fn cmd_uname() {
     crate::println!("Luke's OS 0.2.0 x86_64 (SMP preemptive microkernel with Ring 3 & Syscalls)");
+}
+
+fn cmd_gui() {
+    crate::gfx::wm::GUI_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+    crate::println!("Switched to GUI desktop mode.");
+}
+
+fn cmd_text() {
+    crate::gfx::wm::GUI_MODE.store(false, core::sync::atomic::Ordering::Relaxed);
+    vga::clear_screen();
+    crate::println!("Returned to text console mode.");
+}
+
+fn cmd_about() {
+    let win_id = crate::gfx::wm::create_window("About Luke's OS", 240, 160, 360, 200, true);
+    // Draw some text in the about window content buffer
+    let mut wm = crate::gfx::wm::WM.lock();
+    if let Some(win) = wm.windows.iter_mut().find(|w| w.id == win_id) {
+        win.content.fill(0x001E293B); // Slate dark blue
+        let w = win.content_width as usize;
+        let h = win.content_height as usize;
+
+        let lines = [
+            "============================",
+            "        Luke's OS           ",
+            "     Version 0.3.0 GUI      ",
+            "============================",
+            "",
+            " • 64-bit SMP Multiprocessing",
+            " • Preemptive Work-Stealing  ",
+            " • Kernel Window Compositor  ",
+            " • PS/2 Mouse & Keyboard     ",
+            " • Extensible VFS & LukeFs   ",
+        ];
+
+        for (line_idx, line) in lines.iter().enumerate() {
+            let y0 = 16 + line_idx * 16;
+            for (char_idx, ch) in line.chars().enumerate() {
+                let glyph = crate::vga::font::glyph(ch);
+                let x0 = 16 + char_idx * 8;
+                for (dy, &glyph_row) in glyph.iter().enumerate() {
+                    let py = y0 + dy;
+                    if py >= h {
+                        continue;
+                    }
+                    for dx in 0..8 {
+                        let px = x0 + dx;
+                        if px >= w {
+                            continue;
+                        }
+                        if (glyph_row >> (7 - dx)) & 1 != 0 {
+                            win.content[py * w + px] = 0x00F8FAFC;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    crate::println!("Opened About window (id={})", win_id);
 }
