@@ -114,6 +114,7 @@ pub struct WindowManager {
     pub cursor_y: i32,
     pub mouse_left_down: bool,
     pub dragging_window: Option<(u32, i32, i32)>, // (window_id, grab_offset_x, grab_offset_y)
+    pub start_menu_open: bool,
 }
 
 pub static WM: Mutex<WindowManager> = Mutex::new(WindowManager {
@@ -124,6 +125,7 @@ pub static WM: Mutex<WindowManager> = Mutex::new(WindowManager {
     cursor_y: 200,
     mouse_left_down: false,
     dragging_window: None,
+    start_menu_open: false,
 });
 
 /// Create a new window managed by the WM
@@ -375,7 +377,34 @@ pub fn render_frame(bb: &mut BackBuffer) {
         draw_string(bb, clock_s, clock_x, taskbar_y + 6, TASKBAR_TEXT, None);
     }
 
-    // 4. Draw Mouse Cursor
+    // 4. Render Start Menu popup if open
+    if wm.start_menu_open {
+        let menu_w = 140u32;
+        let menu_h = 100u32;
+        let menu_x = 4;
+        let menu_y = taskbar_y - menu_h as i32;
+
+        bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, menu_h), 0x001E293B); // Dark slate
+        // Border
+        bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, 1), 0x00334155);
+        bb.fill_rect(Rect::new(menu_x, menu_y, 1, menu_h), 0x00334155);
+        bb.fill_rect(Rect::new(menu_x + menu_w as i32 - 1, menu_y, 1, menu_h), 0x00334155);
+
+        // Menu items: Clock, Paint, Files, About
+        let items = [
+            ("1. Clock", 0x00F8FAFC),
+            ("2. Paint", 0x00F8FAFC),
+            ("3. Files", 0x00F8FAFC),
+            ("4. About", 0x0094A3B8),
+        ];
+
+        for (idx, (label, color)) in items.iter().enumerate() {
+            let item_y = menu_y + 8 + (idx as i32 * 22);
+            draw_string(bb, label, menu_x + 12, item_y, *color, None);
+        }
+    }
+
+    // 5. Draw Mouse Cursor
     let cx = wm.cursor_x;
     let cy = wm.cursor_y;
     for (row_idx, line) in CURSOR_MASK.iter().enumerate() {
@@ -513,18 +542,60 @@ pub fn handle_input_events() {
                                 }
                             }
                         } else {
-                            // Check taskbar click
+                            // Check Start Menu click if open
                             let bb_height = BACKBUFFER.lock().as_ref().map(|b| b.height() as i32).unwrap_or(720);
                             let taskbar_y = bb_height - TASKBAR_HEIGHT;
-                            if my >= taskbar_y {
-                                let mut tab_x = 112;
-                                for win in wm.windows.iter() {
-                                    let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
-                                    if tab_rect.contains_point(mx, my) {
-                                        wm.focused_window = Some(win.id);
-                                        break;
+
+                            let mut clicked_menu_item = false;
+                            if wm.start_menu_open {
+                                let menu_w = 140u32;
+                                let menu_h = 100u32;
+                                let menu_rect = Rect::new(4, taskbar_y - menu_h as i32, menu_w, menu_h);
+                                if menu_rect.contains_point(mx, my) {
+                                    clicked_menu_item = true;
+                                    let item_idx = (my - menu_rect.y) / 24;
+                                    wm.start_menu_open = false;
+                                    match item_idx {
+                                        0 => {
+                                            crate::scheduler::spawn("spawn-clock", || {
+                                                let _ = crate::elf::spawn_user_process("/bin/clock");
+                                            });
+                                        }
+                                        1 => {
+                                            crate::scheduler::spawn("spawn-paint", || {
+                                                let _ = crate::elf::spawn_user_process("/bin/paint");
+                                            });
+                                        }
+                                        2 => {
+                                            crate::scheduler::spawn("spawn-files", || {
+                                                let _ = crate::elf::spawn_user_process("/bin/files");
+                                            });
+                                        }
+                                        3 => {
+                                            let _ = crate::gfx::wm::create_window("About Luke's OS", 200, 160, 360, 180, true);
+                                        }
+                                        _ => {}
                                     }
-                                    tab_x += 126;
+                                } else {
+                                    wm.start_menu_open = false;
+                                }
+                            }
+
+                            if !clicked_menu_item && my >= taskbar_y {
+                                // Check Start button click
+                                let start_btn = Rect::new(4, taskbar_y + 3, 100, TASKBAR_HEIGHT as u32 - 6);
+                                if start_btn.contains_point(mx, my) {
+                                    wm.start_menu_open = !wm.start_menu_open;
+                                } else {
+                                    let mut tab_x = 112;
+                                    for win in wm.windows.iter() {
+                                        let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
+                                        if tab_rect.contains_point(mx, my) {
+                                            wm.focused_window = Some(win.id);
+                                            break;
+                                        }
+                                        tab_x += 126;
+                                    }
                                 }
                             }
                         }

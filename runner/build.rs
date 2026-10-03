@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 fn main() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().unwrap();
+
     // Path to the kernel binary (built for x86_64-unknown-none)
     let kernel_path = {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir.parent().unwrap();
         let release = workspace_root
             .join("target")
             .join("x86_64-unknown-none")

@@ -97,7 +97,7 @@
   - Spawns ring-3 processes as preemptive scheduler-managed threads with dedicated kernel stack switching.
 
 
-### 7. Graphical User Interface (GUI) & Window Compositor
+### 7. Graphical User Interface (GUI), Window Compositor & User SDK
 - **Display & BackBuffer Engine (`kernel/src/gfx/`)**:
   - `Display` abstraction over bootloader framebuffer memory supporting RGB and BGR pixel formats.
   - Double-buffered `BackBuffer` backed by contiguous physical frames with row-wise fast bitblt transfers and bounding-box dirty damage tracking (`present`).
@@ -112,9 +112,23 @@
   - Dedicated `"wm"` scheduler thread running desktop composition.
   - Window frame decorations: title bars, active/inactive focus highlighting, close buttons, borders, and per-window pixel buffers.
   - Interactive window movement by clicking and dragging title bars.
-  - Desktop taskbar with start button, window task tabs, and real-time uptime clock.
+  - Desktop taskbar with interactive Start menu, window task tabs, and real-time uptime clock.
   - Software mouse cursor rendering (12x18 arrow pointer) with pixel restoration.
   - Shell terminal runs inside a dedicated desktop window ("Terminal") with `gui`, `text`, and `about` commands.
+- **Graphics System Calls (`kernel/src/syscall.rs`, `docs/ABI.md`)**:
+  - `SYS_WIN_CREATE` (20): creates managed window with dedicated shared pixel memory surface.
+  - `SYS_WIN_BUFFER` (21): returns user virtual address of window pixel buffer.
+  - `SYS_WIN_PRESENT` (22): flushes damaged rectangles into window content and marks dirty for compositor bitblt.
+  - `SYS_WIN_POLL` (23): polls non-blocking input events (`KeyDown`, `KeyUp`, `Char`, `MouseMove`, `MouseDown`, `MouseUp`, `Close`, `FocusIn`, `FocusOut`).
+  - `SYS_WIN_DESTROY` (24): closes window and cleans up mappings; process exit automatically tears down all owned windows.
+- **User SDK & Applications (`user/`)**:
+  - `user/libluke`: `no_std` runtime with `_start`, fast syscall wrappers, print macros, and bump allocator using `SYS_MMAP_ANON`.
+  - `user/luke-gui`: high-level window abstraction with `embedded-graphics` `DrawTarget` implementation.
+  - `user/apps/hello`: Ring 3 user process demonstration printing PID.
+  - `user/apps/clock`: graphical digital clock displaying uptime and updating in real-time.
+  - `user/apps/paint`: interactive painting application with mouse cursor drawing.
+  - `user/apps/files`: graphical file browser displaying files in `/bin`.
+  - Pre-populated `/bin` directory in RamFS (`/bin/hello`, `/bin/clock`, `/bin/paint`, `/bin/files`) executable via shell `exec` or the desktop Start menu.
 
 
 ---

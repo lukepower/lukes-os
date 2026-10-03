@@ -25,10 +25,34 @@ This document serves as the persistent progress log and architectural changelog 
   - M0: User mode correctness fixes (GS base handling, Ring 3 interrupts swapgs, user pointer validation, non-hijacking process spawning).
   - M1: Display and BackBuffer abstractions, `embedded-graphics` DrawTarget, PS/2 mouse driver (IRQ12), unified input event system, kernel window compositor ("wm"), draggable windows, taskbar, software cursor, and in-window terminal shell.
   - M2: Per-process page tables (PML4 lower-half isolation), preemption CR3 switching, FPU/SSE state management (fxsave64/fxrstor64), and extended process syscalls (`sys_spawn`, `sys_wait`, `sys_sleep`, `sys_time`, `sys_mmap_anon`).
+  - M3: Graphics system calls (`sys_win_create`, `sys_win_buffer`, `sys_win_present`, `sys_win_poll`, `sys_win_destroy`), shared memory surface mapping, per-window event queue dispatching, and ABI documentation.
+  - M4: User-space SDK (`libluke`, `luke-gui`), demo applications (`hello`, `clock`, `paint`, `files`), RamFS `/bin` integration, and Start menu desktop app launching.
 
 ---
 
 ## Detailed Milestone Log
+
+### [2026-10-03] Phase 5: Milestone M3 & M4 — Graphics System Calls, User SDK & Desktop Apps
+
+#### 1. Graphics System Calls (`syscall.rs`, `docs/ABI.md`, `wm.rs`)
+- Implemented `SYS_WIN_CREATE` (20), `SYS_WIN_BUFFER` (21), `SYS_WIN_PRESENT` (22), `SYS_WIN_POLL` (23), and `SYS_WIN_DESTROY` (24).
+- Dynamic allocation of user-space shared surface memory for ring-3 window contents.
+- Automatic window cleanup upon process termination (`SYS_EXIT`).
+- Documented full syscall signatures and binary layout of `Event` structure in `docs/ABI.md`.
+
+#### 2. User Space SDK (`user/libluke`, `user/luke-gui`)
+- Created `user/libluke` `no_std` runtime crate providing `_start` entry, safe wrappers for system calls 0..24, print macros, and a heap allocator backed by `SYS_MMAP_ANON`.
+- Created `user/luke-gui` window manager abstraction crate implementing `embedded_graphics::DrawTarget` for client-side rendering.
+
+#### 3. Ring 3 Demo Applications (`user/apps/`)
+- `hello`: ring-3 test binary verifying `SYS_GETPID`, `SYS_WRITE`, and `SYS_EXIT`.
+- `clock`: desktop uptime clock window updating every second.
+- `paint`: mouse-driven interactive drawing canvas in a dedicated window.
+- `files`: visual file browser listing `/bin` executables.
+
+#### 4. System Integration & Desktop Launching
+- Embedded user binaries directly into the kernel image and auto-populated `/bin/*` on RamFS at startup.
+- Interactive Start menu on the desktop taskbar allowing one-click launching of `clock`, `paint`, `files`, and `About Luke's OS`.
 
 ### [2026-10-03] Phase 5: Milestone M2 — Real Processes & Address Space Isolation
 

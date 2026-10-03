@@ -202,11 +202,32 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let _ = vfs::mkdir("/dev");
     let _ = vfs::mkdir("/proc");
     let _ = vfs::mkdir("/disk");
+    let _ = vfs::mkdir("/bin");
 
     if let Ok(mut handle) = vfs::open("/tmp/hello.txt", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
         let _ = handle.write(b"Hello from RamFS!");
         serial_println!("[OK] Created and wrote to /tmp/hello.txt");
     }
+
+    // Embed and populate /bin user binaries
+    static BIN_HELLO: &[u8] = include_bytes!("../../user/target/x86_64-unknown-none/release/hello");
+    static BIN_CLOCK: &[u8] = include_bytes!("../../user/target/x86_64-unknown-none/release/clock");
+    static BIN_PAINT: &[u8] = include_bytes!("../../user/target/x86_64-unknown-none/release/paint");
+    static BIN_FILES: &[u8] = include_bytes!("../../user/target/x86_64-unknown-none/release/files");
+
+    if let Ok(mut h) = vfs::open("/bin/hello", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+        let _ = h.write(BIN_HELLO);
+    }
+    if let Ok(mut h) = vfs::open("/bin/clock", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+        let _ = h.write(BIN_CLOCK);
+    }
+    if let Ok(mut h) = vfs::open("/bin/paint", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+        let _ = h.write(BIN_PAINT);
+    }
+    if let Ok(mut h) = vfs::open("/bin/files", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+        let _ = h.write(BIN_FILES);
+    }
+    serial_println!("[OK] Installed user binaries to /bin (hello, clock, paint, files)");
 
     // Attempt mounting persistent LukeFs on VirtIO disk
     let virtio_dev = alloc::sync::Arc::new(virtio_blk::VirtIoBlockDevice);

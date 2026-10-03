@@ -1,0 +1,11 @@
+[package]
+name = "luke-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libluke = { path = "../libluke" }
+embedded-graphics = { version = "0.8", default-features = false }
+
+[lib]
+crate-type = ["rlib"]

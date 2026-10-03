@@ -1,0 +1,13 @@
+[package]
+name = "paint"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libluke = { path = "../../libluke" }
+luke-gui = { path = "../../luke-gui" }
+embedded-graphics = { version = "0.8", default-features = false }
+
+[[bin]]
+name = "paint"
+path = "src/main.rs"
