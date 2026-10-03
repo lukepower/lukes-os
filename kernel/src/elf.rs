@@ -284,7 +284,10 @@ pub fn spawn_user_process(path: &str) -> Result<crate::thread::ThreadId, &'stati
         memory::page_table_for_frame(pml4_frame, VirtAddr::new(offset))
     };
 
-    let loaded = load_elf(&buffer, &mut proc_mapper, frame_allocator).map_err(|_| "ELF loading failed")?;
+    let loaded = load_elf(&buffer, &mut proc_mapper, frame_allocator).map_err(|err| {
+        serial_println!("[ELF] load_elf failed for '{}': {:?}", path, err);
+        "ELF loading failed"
+    })?;
 
     drop(frame_guard);
 
