@@ -117,6 +117,14 @@ impl BackBuffer {
         self.mark_dirty(Rect::new(0, 0, self.width as u32, self.height as u32));
     }
 
+    pub fn put_pixel_raw(&mut self, x: usize, y: usize, color: u32) {
+        if x < self.width && y < self.height {
+            unsafe {
+                *self.buffer.add(y * self.pitch_pixels + x) = color;
+            }
+        }
+    }
+
     pub fn put_pixel(&mut self, x: usize, y: usize, color: u32) {
         if x < self.width && y < self.height {
             unsafe {
@@ -199,6 +207,7 @@ impl BackBuffer {
         };
 
         let is_bgr = display.format != DisplayPixelFormat::Rgb; // Bootloader default is BGR
+        let row_w = (clamped.width as usize).min(1280);
 
         for y in clamped.y..(clamped.y + clamped.height as i32) {
             let back_row_offset = y as usize * self.pitch_pixels + clamped.x as usize;
@@ -210,47 +219,43 @@ impl BackBuffer {
 
                 if display.bpp == 4 {
                     if is_bgr {
-                        // In BackBuffer, u32 is stored as 0x00RRGGBB (or BGR in memory).
-                        // Let's copy row-wise or convert if needed:
-                        // If BackBuffer stores 0x00RRGGBB (native little endian: byte0=B, byte1=G, byte2=R, byte3=0),
-                        // and display is BGR (byte0=B, byte1=G, byte2=R, byte3=unused),
-                        // then copy_nonoverlapping is directly identical!
                         core::ptr::copy_nonoverlapping(
                             back_ptr as *const u8,
                             front_ptr,
-                            clamped.width as usize * 4,
+                            row_w * 4,
                         );
                     } else {
-                        // RGB: swap B and R
-                        for x in 0..clamped.width as usize {
+                        let mut row_buf = [0u8; 1280 * 4];
+                        for x in 0..row_w {
                             let val = *back_ptr.add(x);
-                            let b = (val & 0xFF) as u8;
-                            let g = ((val >> 8) & 0xFF) as u8;
-                            let r = ((val >> 16) & 0xFF) as u8;
-                            let target = front_ptr.add(x * 4);
-                            *target = r;
-                            *target.add(1) = g;
-                            *target.add(2) = b;
-                            *target.add(3) = 0;
+                            let off = x * 4;
+                            row_buf[off] = ((val >> 16) & 0xFF) as u8;
+                            row_buf[off + 1] = ((val >> 8) & 0xFF) as u8;
+                            row_buf[off + 2] = (val & 0xFF) as u8;
+                            row_buf[off + 3] = 0;
                         }
+                        core::ptr::copy_nonoverlapping(row_buf.as_ptr(), front_ptr, row_w * 4);
                     }
                 } else if display.bpp == 3 {
-                    for x in 0..clamped.width as usize {
-                        let val = *back_ptr.add(x);
-                        let b = (val & 0xFF) as u8;
-                        let g = ((val >> 8) & 0xFF) as u8;
-                        let r = ((val >> 16) & 0xFF) as u8;
-                        let target = front_ptr.add(x * 3);
-                        if is_bgr {
-                            *target = b;
-                            *target.add(1) = g;
-                            *target.add(2) = r;
-                        } else {
-                            *target = r;
-                            *target.add(1) = g;
-                            *target.add(2) = b;
+                    let mut row_buf = [0u8; 1280 * 3];
+                    if is_bgr {
+                        for x in 0..row_w {
+                            let val = *back_ptr.add(x);
+                            let off = x * 3;
+                            row_buf[off] = (val & 0xFF) as u8;
+                            row_buf[off + 1] = ((val >> 8) & 0xFF) as u8;
+                            row_buf[off + 2] = ((val >> 16) & 0xFF) as u8;
+                        }
+                    } else {
+                        for x in 0..row_w {
+                            let val = *back_ptr.add(x);
+                            let off = x * 3;
+                            row_buf[off] = ((val >> 16) & 0xFF) as u8;
+                            row_buf[off + 1] = ((val >> 8) & 0xFF) as u8;
+                            row_buf[off + 2] = (val & 0xFF) as u8;
                         }
                     }
+                    core::ptr::copy_nonoverlapping(row_buf.as_ptr(), front_ptr, row_w * 3);
                 }
             }
         }

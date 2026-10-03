@@ -579,6 +579,7 @@ impl Writer {
 
                 COL.store(col, core::sync::atomic::Ordering::Relaxed);
                 ROW.store(row, core::sync::atomic::Ordering::Relaxed);
+                win.dirty = true;
                 return;
             }
         }
@@ -643,6 +644,59 @@ impl Writer {
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if crate::gfx::wm::GUI_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+            let mut wm = crate::gfx::wm::WM.lock();
+            if let Some(win) = wm.windows.iter_mut().find(|w| w.id == 1) {
+                let cols = (win.content_width as usize) / font::GLYPH_WIDTH;
+                let rows = (win.content_height as usize) / font::GLYPH_HEIGHT;
+                let mut col = COL.load(core::sync::atomic::Ordering::Relaxed);
+                let mut row = ROW.load(core::sync::atomic::Ordering::Relaxed);
+
+                for ch in s.chars() {
+                    match ch {
+                        '\n' => {
+                            col = 0;
+                            row += 1;
+                        }
+                        '\r' => {
+                            col = 0;
+                        }
+                        '\x08' => {
+                            if col > 0 {
+                                col -= 1;
+                                clear_char_window(win, col, row);
+                            } else if row > 0 {
+                                row -= 1;
+                                col = cols.saturating_sub(1);
+                                clear_char_window(win, col, row);
+                            }
+                        }
+                        ch => {
+                            if col >= cols {
+                                col = 0;
+                                row += 1;
+                            }
+                            if row >= rows {
+                                scroll_up_window(win);
+                                row = rows.saturating_sub(1);
+                            }
+                            draw_char_window(win, ch, col, row);
+                            col += 1;
+                        }
+                    }
+                    if row >= rows {
+                        scroll_up_window(win);
+                        row = rows.saturating_sub(1);
+                    }
+                }
+
+                COL.store(col, core::sync::atomic::Ordering::Relaxed);
+                ROW.store(row, core::sync::atomic::Ordering::Relaxed);
+                win.dirty = true;
+                return Ok(());
+            }
+        }
+
         for ch in s.chars() {
             self.write_char(ch);
         }

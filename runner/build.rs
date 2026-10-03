@@ -1,44 +1,62 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().unwrap();
 
-    // Path to the kernel binary (built for x86_64-unknown-none)
-    let kernel_path = {
-        let release = workspace_root
-            .join("target")
-            .join("x86_64-unknown-none")
-            .join("release")
-            .join("kernel");
-        let debug = workspace_root
-            .join("target")
-            .join("x86_64-unknown-none")
-            .join("debug")
-            .join("kernel");
+    println!("cargo:rerun-if-changed={}", workspace_root.join("kernel").join("src").display());
+    println!("cargo:rerun-if-changed={}", workspace_root.join("user").display());
 
-        match (release.metadata().and_then(|m| m.modified()), debug.metadata().and_then(|m| m.modified())) {
-            (Ok(rel_time), Ok(dbg_time)) => {
-                if rel_time > dbg_time {
-                    release
-                } else {
-                    debug
-                }
-            }
-            (Ok(_), Err(_)) => release,
-            (Err(_), Ok(_)) => debug,
-            _ => release,
+    // 1. Compile User Space Applications
+    let user_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--target",
+            "x86_64-unknown-none",
+            "--release",
+            "--manifest-path",
+            "user/Cargo.toml",
+        ])
+        .current_dir(workspace_root)
+        .status();
+    if let Ok(st) = user_status {
+        if !st.success() {
+            panic!("Failed to build user applications");
         }
-    };
+    }
 
-    println!("cargo:rerun-if-changed={}", kernel_path.display());
+    // 2. Compile Kernel
+    let kernel_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--target",
+            "x86_64-unknown-none",
+            "--release",
+            "--package",
+            "kernel",
+        ])
+        .current_dir(workspace_root)
+        .status();
+    if let Ok(st) = kernel_status {
+        if !st.success() {
+            panic!("Failed to build kernel");
+        }
+    }
+
+    // Path to the kernel binary (built for x86_64-unknown-none)
+    let kernel_path = workspace_root
+        .join("target")
+        .join("x86_64-unknown-none")
+        .join("release")
+        .join("kernel");
 
     // Create BIOS boot image
-    let bios_path = workspace_root_dir()
+    let bios_path = workspace_root
         .join("target")
         .join("rustos-bios.img");
 
-    let uefi_path = workspace_root_dir()
+    let uefi_path = workspace_root
         .join("target")
         .join("rustos-uefi.img");
 
@@ -63,11 +81,4 @@ fn main() {
     } else {
         println!("cargo:warning=Kernel binary not found at {}. Build the kernel first.", kernel_path.display());
     }
-}
-
-fn workspace_root_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
 }

@@ -115,6 +115,8 @@ pub struct WindowManager {
     pub mouse_left_down: bool,
     pub dragging_window: Option<(u32, i32, i32)>, // (window_id, grab_offset_x, grab_offset_y)
     pub start_menu_open: bool,
+    pub screen_width: i32,
+    pub screen_height: i32,
 }
 
 pub static WM: Mutex<WindowManager> = Mutex::new(WindowManager {
@@ -126,7 +128,15 @@ pub static WM: Mutex<WindowManager> = Mutex::new(WindowManager {
     mouse_left_down: false,
     dragging_window: None,
     start_menu_open: false,
+    screen_width: 1280,
+    screen_height: 720,
 });
+
+pub fn init_screen_size(width: i32, height: i32) {
+    let mut wm = WM.lock();
+    wm.screen_width = width;
+    wm.screen_height = height;
+}
 
 /// Create a new window managed by the WM
 pub fn create_window(title: &str, x: i32, y: i32, width: u32, height: u32, closable: bool) -> u32 {
@@ -278,9 +288,9 @@ fn draw_glyph_8x16(bb: &mut BackBuffer, ch: char, x0: i32, y0: i32, fg: u32, bg:
             }
             let lit = (row >> (7 - dx)) & 1 != 0;
             if lit {
-                bb.put_pixel(px as usize, py as usize, fg);
+                bb.put_pixel_raw(px as usize, py as usize, fg);
             } else if let Some(bg_color) = bg {
-                bb.put_pixel(px as usize, py as usize, bg_color);
+                bb.put_pixel_raw(px as usize, py as usize, bg_color);
             }
         }
     }
@@ -301,131 +311,133 @@ pub fn render_frame(bb: &mut BackBuffer) {
     // 1. Draw Desktop background
     bb.fill_rect(Rect::new(0, 0, screen_w, screen_h), DESKTOP_BG);
 
-    let wm = WM.lock();
-    let focused_id = wm.focused_window;
+    {
+        let wm = WM.lock();
+        let focused_id = wm.focused_window;
 
-    // 2. Render Windows sorted by z-order
-    for win in wm.windows.iter() {
-        let is_focused = Some(win.id) == focused_id;
-        let titlebar_color = if is_focused { TITLEBAR_ACTIVE } else { TITLEBAR_INACTIVE };
+        // 2. Render Windows sorted by z-order
+        for win in wm.windows.iter() {
+            let is_focused = Some(win.id) == focused_id;
+            let titlebar_color = if is_focused { TITLEBAR_ACTIVE } else { TITLEBAR_INACTIVE };
 
-        // Outer border
-        bb.fill_rect(win.rect, WINDOW_BORDER);
+            // Outer border
+            bb.fill_rect(win.rect, WINDOW_BORDER);
 
-        // Titlebar
-        let titlebar = win.titlebar_rect();
-        bb.fill_rect(titlebar, titlebar_color);
+            // Titlebar
+            let titlebar = win.titlebar_rect();
+            bb.fill_rect(titlebar, titlebar_color);
 
-        // Title text
-        draw_string(bb, &win.title, titlebar.x + 8, titlebar.y + 4, TITLEBAR_TEXT, None);
+            // Title text
+            draw_string(bb, &win.title, titlebar.x + 8, titlebar.y + 4, TITLEBAR_TEXT, None);
 
-        // Close button if closable
-        if win.closable {
-            let btn = win.close_btn_rect();
-            bb.fill_rect(btn, BTN_CLOSE_BG);
-            draw_string(bb, "X", btn.x + 4, btn.y + 1, 0x00FFFFFF, None);
+            // Close button if closable
+            if win.closable {
+                let btn = win.close_btn_rect();
+                bb.fill_rect(btn, BTN_CLOSE_BG);
+                draw_string(bb, "X", btn.x + 4, btn.y + 1, 0x00FFFFFF, None);
+            }
+
+            // Window content
+            let content_r = win.content_rect();
+            bb.copy_rect(
+                &win.content,
+                win.content_width as usize,
+                Rect::new(0, 0, win.content_width, win.content_height),
+                content_r.x,
+                content_r.y,
+            );
         }
 
-        // Window content
-        let content_r = win.content_rect();
-        bb.copy_rect(
-            &win.content,
-            win.content_width as usize,
-            Rect::new(0, 0, win.content_width, win.content_height),
-            content_r.x,
-            content_r.y,
-        );
-    }
+        // 3. Render Taskbar at bottom
+        let taskbar_y = (screen_h - TASKBAR_HEIGHT as u32) as i32;
+        let taskbar_rect = Rect::new(0, taskbar_y, screen_w, TASKBAR_HEIGHT as u32);
+        bb.fill_rect(taskbar_rect, TASKBAR_BG);
 
-    // 3. Render Taskbar at bottom
-    let taskbar_y = (screen_h - TASKBAR_HEIGHT as u32) as i32;
-    let taskbar_rect = Rect::new(0, taskbar_y, screen_w, TASKBAR_HEIGHT as u32);
-    bb.fill_rect(taskbar_rect, TASKBAR_BG);
+        // "Luke's OS" Start button on taskbar
+        let start_btn_rect = Rect::new(4, taskbar_y + 3, 100, TASKBAR_HEIGHT as u32 - 6);
+        bb.fill_rect(start_btn_rect, TASKBAR_BTN_ACTIVE);
+        draw_string(bb, "Luke's OS", start_btn_rect.x + 8, start_btn_rect.y + 3, 0x00FFFFFF, None);
 
-    // "Luke's OS" Start button on taskbar
-    let start_btn_rect = Rect::new(4, taskbar_y + 3, 100, TASKBAR_HEIGHT as u32 - 6);
-    bb.fill_rect(start_btn_rect, TASKBAR_BTN_ACTIVE);
-    draw_string(bb, "Luke's OS", start_btn_rect.x + 8, start_btn_rect.y + 3, 0x00FFFFFF, None);
+        // Window tabs on taskbar
+        let mut tab_x = start_btn_rect.right() + 8;
+        for win in wm.windows.iter() {
+            let is_focused = Some(win.id) == focused_id;
+            let tab_bg = if is_focused { TASKBAR_BTN_ACTIVE } else { TASKBAR_BTN_BG };
+            let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
+            bb.fill_rect(tab_rect, tab_bg);
 
-    // Window tabs on taskbar
-    let mut tab_x = start_btn_rect.right() + 8;
-    for win in wm.windows.iter() {
-        let is_focused = Some(win.id) == focused_id;
-        let tab_bg = if is_focused { TASKBAR_BTN_ACTIVE } else { TASKBAR_BTN_BG };
-        let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
-        bb.fill_rect(tab_rect, tab_bg);
-
-        // Truncate title if longer than 12 chars
-        let display_title: String = win.title.chars().take(12).collect();
-        draw_string(bb, &display_title, tab_rect.x + 6, tab_rect.y + 3, TASKBAR_TEXT, None);
-        tab_x += 126;
-    }
-
-    // System uptime clock on right side of taskbar
-    let ticks = crate::interrupts::ticks();
-    let seconds = ticks / 100; // approximate
-    let minutes = seconds / 60;
-    let sec_rem = seconds % 60;
-    let mut time_str = [b'0'; 5];
-    time_str[0] = b'0' + ((minutes / 10) % 10) as u8;
-    time_str[1] = b'0' + (minutes % 10) as u8;
-    time_str[2] = b':';
-    time_str[3] = b'0' + ((sec_rem / 10) % 10) as u8;
-    time_str[4] = b'0' + (sec_rem % 10) as u8;
-    if let Ok(clock_s) = core::str::from_utf8(&time_str) {
-        let clock_x = screen_w as i32 - 60;
-        draw_string(bb, clock_s, clock_x, taskbar_y + 6, TASKBAR_TEXT, None);
-    }
-
-    // 4. Render Start Menu popup if open
-    if wm.start_menu_open {
-        let menu_w = 140u32;
-        let menu_h = 100u32;
-        let menu_x = 4;
-        let menu_y = taskbar_y - menu_h as i32;
-
-        bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, menu_h), 0x001E293B); // Dark slate
-        // Border
-        bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, 1), 0x00334155);
-        bb.fill_rect(Rect::new(menu_x, menu_y, 1, menu_h), 0x00334155);
-        bb.fill_rect(Rect::new(menu_x + menu_w as i32 - 1, menu_y, 1, menu_h), 0x00334155);
-
-        // Menu items: Clock, Paint, Files, About
-        let items = [
-            ("1. Clock", 0x00F8FAFC),
-            ("2. Paint", 0x00F8FAFC),
-            ("3. Files", 0x00F8FAFC),
-            ("4. About", 0x0094A3B8),
-        ];
-
-        for (idx, (label, color)) in items.iter().enumerate() {
-            let item_y = menu_y + 8 + (idx as i32 * 22);
-            draw_string(bb, label, menu_x + 12, item_y, *color, None);
+            // Truncate title if longer than 12 chars
+            let display_title: String = win.title.chars().take(12).collect();
+            draw_string(bb, &display_title, tab_rect.x + 6, tab_rect.y + 3, TASKBAR_TEXT, None);
+            tab_x += 126;
         }
-    }
 
-    // 5. Draw Mouse Cursor
-    let cx = wm.cursor_x;
-    let cy = wm.cursor_y;
-    for (row_idx, line) in CURSOR_MASK.iter().enumerate() {
-        let py = cy + row_idx as i32;
-        if py < 0 || py >= screen_h as i32 {
-            continue;
+        // System uptime clock on right side of taskbar
+        let ticks = crate::interrupts::ticks();
+        let seconds = ticks / 100; // approximate
+        let minutes = seconds / 60;
+        let sec_rem = seconds % 60;
+        let mut time_str = [b'0'; 5];
+        time_str[0] = b'0' + ((minutes / 10) % 10) as u8;
+        time_str[1] = b'0' + (minutes % 10) as u8;
+        time_str[2] = b':';
+        time_str[3] = b'0' + ((sec_rem / 10) % 10) as u8;
+        time_str[4] = b'0' + (sec_rem % 10) as u8;
+        if let Ok(clock_s) = core::str::from_utf8(&time_str) {
+            let clock_x = screen_w as i32 - 60;
+            draw_string(bb, clock_s, clock_x, taskbar_y + 6, TASKBAR_TEXT, None);
         }
-        for (col_idx, ch) in line.chars().enumerate() {
-            let px = cx + col_idx as i32;
-            if px < 0 || px >= screen_w as i32 {
+
+        // 4. Render Start Menu popup if open
+        if wm.start_menu_open {
+            let menu_w = 140u32;
+            let menu_h = 100u32;
+            let menu_x = 4;
+            let menu_y = taskbar_y - menu_h as i32;
+
+            bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, menu_h), 0x001E293B); // Dark slate
+            // Border
+            bb.fill_rect(Rect::new(menu_x, menu_y, menu_w, 1), 0x00334155);
+            bb.fill_rect(Rect::new(menu_x, menu_y, 1, menu_h), 0x00334155);
+            bb.fill_rect(Rect::new(menu_x + menu_w as i32 - 1, menu_y, 1, menu_h), 0x00334155);
+
+            // Menu items: Clock, Paint, Files, About
+            let items = [
+                ("1. Clock", 0x00F8FAFC),
+                ("2. Paint", 0x00F8FAFC),
+                ("3. Files", 0x00F8FAFC),
+                ("4. About", 0x0094A3B8),
+            ];
+
+            for (idx, (label, color)) in items.iter().enumerate() {
+                let item_y = menu_y + 8 + (idx as i32 * 22);
+                draw_string(bb, label, menu_x + 12, item_y, *color, None);
+            }
+        }
+
+        // 5. Draw Mouse Cursor
+        let cx = wm.cursor_x;
+        let cy = wm.cursor_y;
+        for (row_idx, line) in CURSOR_MASK.iter().enumerate() {
+            let py = cy + row_idx as i32;
+            if py < 0 || py >= screen_h as i32 {
                 continue;
             }
-            match ch {
-                'X' => bb.put_pixel(px as usize, py as usize, CURSOR_BORDER),
-                '.' => bb.put_pixel(px as usize, py as usize, CURSOR_COLOR),
-                _ => {}
+            for (col_idx, ch) in line.chars().enumerate() {
+                let px = cx + col_idx as i32;
+                if px < 0 || px >= screen_w as i32 {
+                    continue;
+                }
+                match ch {
+                    'X' => bb.put_pixel_raw(px as usize, py as usize, CURSOR_BORDER),
+                    '.' => bb.put_pixel_raw(px as usize, py as usize, CURSOR_COLOR),
+                    _ => {}
+                }
             }
         }
     }
 
-    // Mark entire screen dirty and present to front buffer
+    // Mark entire screen dirty and present to front buffer without holding WM.lock()
     bb.mark_dirty(Rect::new(0, 0, screen_w, screen_h));
     bb.present();
 }
@@ -436,8 +448,8 @@ pub fn handle_input_events() {
     while let Some(event) = pop_event() {
         match event {
             InputEvent::MouseMove { dx, dy } => {
-                let bb_width = BACKBUFFER.lock().as_ref().map(|b| b.width() as i32).unwrap_or(1280);
-                let bb_height = BACKBUFFER.lock().as_ref().map(|b| b.height() as i32).unwrap_or(720);
+                let bb_width = wm.screen_width;
+                let bb_height = wm.screen_height;
 
                 wm.cursor_x = (wm.cursor_x + dx as i32).clamp(0, bb_width - 1);
                 wm.cursor_y = (wm.cursor_y + dy as i32).clamp(0, bb_height - 1);
@@ -543,8 +555,7 @@ pub fn handle_input_events() {
                             }
                         } else {
                             // Check Start Menu click if open
-                            let bb_height = BACKBUFFER.lock().as_ref().map(|b| b.height() as i32).unwrap_or(720);
-                            let taskbar_y = bb_height - TASKBAR_HEIGHT;
+                            let taskbar_y = wm.screen_height - TASKBAR_HEIGHT;
 
                             let mut clicked_menu_item = false;
                             if wm.start_menu_open {

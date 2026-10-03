@@ -56,12 +56,20 @@ pub fn new_user_page_table(
         for i in 256..512 {
             user_table[i] = kernel_table[i].clone();
         }
+
+        // Copy lower-half kernel mappings (e.g. entry 32 = kernel text/data, entry 136 = heap/backbuffer)
+        // User processes only occupy entry 0 (code/data/bss) and entry 255 (user stack).
+        for i in 1..255 {
+            if !kernel_table[i].is_unused() {
+                user_table[i] = kernel_table[i].clone();
+            }
+        }
     }
 
     Some(pml4_frame)
 }
 
-/// Free all user frames mapped in the lower half of the given PML4 and deallocate the PML4 frame.
+/// Free all user frames mapped in the user entries of the given PML4 and deallocate the PML4 frame.
 pub unsafe fn free_user_page_table(
     pml4_frame: PhysFrame<Size4KiB>,
     frame_allocator: &mut BootInfoFrameAllocator,
@@ -70,8 +78,8 @@ pub unsafe fn free_user_page_table(
     let pml4_virt = (offset + pml4_frame.start_address().as_u64()) as *mut PageTable;
     let pml4 = &mut *pml4_virt;
 
-    // Walk lower-half entries 0..256
-    for i in 0..256 {
+    // Walk user-private entries 0 and 255 only (entries 1..255 and 256..512 are shared kernel mappings)
+    for &i in &[0, 255] {
         if !pml4[i].is_unused() && pml4[i].flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
             let pdpt_frame = pml4[i].frame().unwrap();
             let pdpt_virt = (offset + pdpt_frame.start_address().as_u64()) as *mut PageTable;

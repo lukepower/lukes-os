@@ -70,6 +70,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             info.width, info.height, info.bytes_per_pixel * 8
         );
         gfx::display::init(framebuffer);
+        gfx::wm::init_screen_size(info.width as i32, info.height as i32);
         vga::init();
     } else {
         serial_println!("[WARN] No framebuffer available — VGA output disabled");
@@ -257,70 +258,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     scheduler::init();
     serial_println!("[OK] Work-stealing scheduler initialized");
 
-    // Spawn concurrent threads across cores demonstrating work-stealing and SleepingMutex
-    scheduler::spawn("worker-A", || {
-        for i in 0..5 {
-            let core = smp::PerCpu::current().core_id;
-            serial_println!("[Worker A | Core {}] tick {}", core, i);
-            println!("[Worker A | Core {}] tick {}", core, i);
-            {
-                let mut guard = SHARED_COUNTER.lock();
-                *guard += 10;
-            }
-            scheduler::yield_now();
-        }
-        serial_println!("[Worker A] finished successfully");
-    });
-
-    scheduler::spawn("worker-B", || {
-        for i in 0..5 {
-            let core = smp::PerCpu::current().core_id;
-            serial_println!("[Worker B | Core {}] tick {}", core, i);
-            println!("[Worker B | Core {}] tick {}", core, i);
-            {
-                let mut guard = SHARED_COUNTER.lock();
-                *guard += 20;
-            }
-            scheduler::yield_now();
-        }
-        serial_println!("[Worker B] finished successfully");
-    });
-
-    scheduler::spawn("preempt-compute", || {
-        let core = smp::PerCpu::current().core_id;
-        serial_println!("[Compute Core {}] Starting intensive calculation...", core);
-        let mut sum: u64 = 0;
-        for i in 0..1_000_000 {
-            sum = sum.wrapping_add(i);
-        }
-        serial_println!("[Compute Core {}] Calculation complete: sum={}", core, sum);
-    });
-
-    scheduler::spawn("counter-checker", || {
-        let core = smp::PerCpu::current().core_id;
-        for _ in 0..3 {
-            let val = *SHARED_COUNTER.lock();
-            serial_println!("[Checker | Core {}] Current SHARED_COUNTER={}", core, val);
-            scheduler::yield_now();
-        }
-        serial_println!("[Checker] Finished");
-    });
-
-    // ── Interactive Shell Thread ──
-    scheduler::spawn("shell", || {
-        shell::shell_main();
-    });
-
     // ── PS/2 Mouse & Window Manager (M1) ──
     mouse::init();
     interrupts::unmask_mouse();
 
     // Create Terminal window (ID=1) for shell
     let _term_id = gfx::wm::create_window("Terminal", 40, 40, 640, 400, false);
-    const GUI_ON_BOOT: bool = true;
-    if GUI_ON_BOOT {
-        gfx::wm::GUI_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+    gfx::wm::GUI_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+
+    // Initial frame render so desktop is visible immediately
+    if let Some(mut bb_guard) = gfx::BACKBUFFER.try_lock() {
+        if let Some(ref mut bb) = bb_guard.as_mut() {
+            gfx::wm::render_frame(bb);
+            serial_println!("[OK] Initial desktop frame rendered to screen");
+        }
     }
+
+    // ── Interactive Shell Thread ──
+    scheduler::spawn("shell", || {
+        shell::shell_main();
+    });
 
     scheduler::spawn("wm", || {
         gfx::wm::wm_thread_main();
