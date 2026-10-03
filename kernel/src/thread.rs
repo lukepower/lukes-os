@@ -53,14 +53,29 @@ pub enum ThreadState {
 /// Kernel stack size per thread (32 KiB).
 pub const STACK_SIZE: usize = 4096 * 8;
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct FxState {
+    pub data: [u8; 512],
+}
+
+impl FxState {
+    pub const fn new() -> Self {
+        Self { data: [0; 512] }
+    }
+}
+
 pub struct Thread {
     pub id: ThreadId,
     pub name: &'static str,
     pub state: ThreadState,
+    pub process_id: Option<crate::process::ProcessId>,
     /// Stack pointer where Context is saved
     pub saved_rsp: u64,
     /// Kernel stack top (for TSS RSP0 and GS:[8] switching)
     pub kernel_stack_top: u64,
+    /// FPU/SSE saved register state
+    pub fx_state: FxState,
     /// Preferred or current running CPU core
     pub core_id: usize,
     /// Heap-allocated kernel stack
@@ -125,14 +140,21 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            process_id: None,
             saved_rsp: ctx_ptr as u64,
             kernel_stack_top: stack_top,
+            fx_state: FxState::new(),
             core_id: 0,
             _stack: Some(stack),
         }
     }
 
-    pub fn new_user(name: &'static str, entry: u64, user_stack_top: u64) -> Self {
+    pub fn new_user(
+        name: &'static str,
+        entry: u64,
+        user_stack_top: u64,
+        process_id: crate::process::ProcessId,
+    ) -> Self {
         let id = ThreadId::new();
 
         let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
@@ -174,8 +196,10 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            process_id: Some(process_id),
             saved_rsp: ctx_ptr as u64,
             kernel_stack_top: stack_top,
+            fx_state: FxState::new(),
             core_id: 0,
             _stack: Some(stack),
         }
@@ -186,8 +210,10 @@ impl Thread {
             id: ThreadId(core_id as u64),
             name,
             state: ThreadState::Running,
+            process_id: None,
             saved_rsp: 0,
             kernel_stack_top: 0,
+            fx_state: FxState::new(),
             core_id,
             _stack: None,
         }

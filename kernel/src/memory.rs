@@ -19,6 +19,104 @@ pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static>
     unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) }
 }
 
+/// Create an OffsetPageTable for an arbitrary PML4 physical frame.
+pub unsafe fn page_table_for_frame(
+    pml4_frame: PhysFrame<Size4KiB>,
+    physical_memory_offset: VirtAddr,
+) -> OffsetPageTable<'static> {
+    let phys = pml4_frame.start_address();
+    let virt = physical_memory_offset + phys.as_u64();
+    let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+    unsafe { OffsetPageTable::new(&mut *page_table_ptr, physical_memory_offset) }
+}
+
+/// Allocate a new user PML4 table with lower-half (0..256) zeroed and upper-half (256..512)
+/// mirrored from the kernel PML4 table.
+pub fn new_user_page_table(
+    frame_allocator: &mut BootInfoFrameAllocator,
+) -> Option<PhysFrame<Size4KiB>> {
+    let pml4_frame = frame_allocator.allocate_frame_internal()?;
+    let offset = PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let user_pml4_virt = (offset + pml4_frame.start_address().as_u64()) as *mut PageTable;
+
+    use x86_64::registers::control::Cr3;
+    let (kernel_pml4_frame, _) = Cr3::read();
+    let kernel_pml4_virt = (offset + kernel_pml4_frame.start_address().as_u64()) as *const PageTable;
+
+    unsafe {
+        let user_table = &mut *user_pml4_virt;
+        let kernel_table = &*kernel_pml4_virt;
+
+        // Zero out lower half (entries 0..256: 0x0000_0000_0000_0000 .. 0x0000_7FFF_FFFF_FFFF)
+        for i in 0..256 {
+            user_table[i].set_unused();
+        }
+
+        // Copy kernel mappings in upper half (entries 256..512)
+        for i in 256..512 {
+            user_table[i] = kernel_table[i].clone();
+        }
+    }
+
+    Some(pml4_frame)
+}
+
+/// Free all user frames mapped in the lower half of the given PML4 and deallocate the PML4 frame.
+pub unsafe fn free_user_page_table(
+    pml4_frame: PhysFrame<Size4KiB>,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) {
+    let offset = PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let pml4_virt = (offset + pml4_frame.start_address().as_u64()) as *mut PageTable;
+    let pml4 = &mut *pml4_virt;
+
+    // Walk lower-half entries 0..256
+    for i in 0..256 {
+        if !pml4[i].is_unused() && pml4[i].flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+            let pdpt_frame = pml4[i].frame().unwrap();
+            let pdpt_virt = (offset + pdpt_frame.start_address().as_u64()) as *mut PageTable;
+            let pdpt = &mut *pdpt_virt;
+
+            for j in 0..512 {
+                if !pdpt[j].is_unused() && pdpt[j].flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+                    if pdpt[j].flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                        // 1 GiB huge page
+                        frame_allocator.deallocate_contiguous(pdpt[j].frame().unwrap(), 512 * 512);
+                    } else {
+                        let pd_frame = pdpt[j].frame().unwrap();
+                        let pd_virt = (offset + pd_frame.start_address().as_u64()) as *mut PageTable;
+                        let pd = &mut *pd_virt;
+
+                        for k in 0..512 {
+                            if !pd[k].is_unused() && pd[k].flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+                                if pd[k].flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                                    // 2 MiB huge page
+                                    frame_allocator.deallocate_contiguous(pd[k].frame().unwrap(), 512);
+                                } else {
+                                    let pt_frame = pd[k].frame().unwrap();
+                                    let pt_virt = (offset + pt_frame.start_address().as_u64()) as *mut PageTable;
+                                    let pt = &mut *pt_virt;
+
+                                    for l in 0..512 {
+                                        if !pt[l].is_unused() && pt[l].flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+                                            frame_allocator.deallocate_frame(pt[l].frame().unwrap());
+                                        }
+                                    }
+                                    frame_allocator.deallocate_frame(pt_frame);
+                                }
+                            }
+                        }
+                        frame_allocator.deallocate_frame(pd_frame);
+                    }
+                }
+            }
+            frame_allocator.deallocate_frame(pdpt_frame);
+        }
+    }
+
+    frame_allocator.deallocate_frame(pml4_frame);
+}
+
 unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
     use x86_64::registers::control::Cr3;
 

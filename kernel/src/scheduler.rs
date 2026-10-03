@@ -37,8 +37,13 @@ pub fn spawn(name: &'static str, entry: fn()) {
     }
 }
 
-pub fn spawn_user(name: &'static str, entry: u64, user_stack_top: u64) -> ThreadId {
-    let mut thread = Box::new(Thread::new_user(name, entry, user_stack_top));
+pub fn spawn_user(
+    name: &'static str,
+    entry: u64,
+    user_stack_top: u64,
+    process_id: crate::process::ProcessId,
+) -> ThreadId {
+    let mut thread = Box::new(Thread::new_user(name, entry, user_stack_top, process_id));
     let tid = thread.id;
 
     let num_cores = CORES_ONLINE.load(Ordering::Acquire).max(1);
@@ -202,6 +207,15 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
 
     if let Some(mut cur) = percpu.current_thread.take() {
         cur.saved_rsp = current_rsp;
+
+        // Save FPU/SSE state for preempted thread
+        unsafe {
+            core::arch::asm!(
+                "fxsave64 [{}]",
+                in(reg) cur.fx_state.data.as_mut_ptr(),
+            );
+        }
+
         match cur.state {
             ThreadState::Running => {
                 cur.state = ThreadState::Ready;
@@ -239,12 +253,35 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
     }
 
     // 3. Fallback to idle thread
-    let thread_to_run = match next_thread {
+    let mut thread_to_run = match next_thread {
         Some(t) => t,
         None => percpu.idle_thread.take().unwrap_or_else(|| {
             Box::new(Thread::idle("idle_fallback", my_core))
         }),
     };
+
+    // Restore FPU/SSE state for new thread
+    unsafe {
+        core::arch::asm!(
+            "fxrstor64 [{}]",
+            in(reg) thread_to_run.fx_state.data.as_ptr(),
+        );
+    }
+
+    // CR3 page table switching:
+    // If the next thread belongs to a user process, load its PML4; otherwise, keep/load kernel PML4.
+    use x86_64::registers::control::{Cr3, Cr3Flags};
+    if let Some(pid) = thread_to_run.process_id {
+        if let Some(proc_arc) = crate::process::find_process(pid) {
+            let pml4 = proc_arc.lock().pml4;
+            let (current_cr3, _) = Cr3::read();
+            if current_cr3 != pml4 {
+                unsafe {
+                    Cr3::write(pml4, Cr3Flags::empty());
+                }
+            }
+        }
+    }
 
     let next_rsp = thread_to_run.saved_rsp;
     if thread_to_run.kernel_stack_top != 0 {

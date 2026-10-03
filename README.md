@@ -77,16 +77,25 @@
   - Custom block-backed filesystem mounted persistently at `/disk` on the VirtIO block device.
   - Superblock verification, automatic formatting, allocation table management, and dynamic sector growth.
 
-### 6. User Space, Fast System Calls & ELF Loader
+### 6. User Space, Process Isolation & Hardware-Accelerated Syscalls
 - **Privilege Rings & TSS RSP0 (`kernel/src/gdt.rs`)**: User mode descriptors (DPL 3) with dynamic TSS `privilege_stack_table[0]` updates providing dedicated kernel stack recovery on Ring 3 transitions.
-- **Hardware-Accelerated Syscalls (`kernel/src/syscall.rs`)**:
+- **Per-Process Address Space Isolation (`kernel/src/process.rs`, `kernel/src/memory.rs`)**:
+  - `Process` structure tracking `pid`, `pml4`, threads, and exit codes.
+  - Per-process PML4 page tables (`memory::new_user_page_table`) isolating lower-half memory (`0..256`) while mirroring upper-half kernel space (`256..512`).
+  - Preemptive `CR3` page table switching during scheduling context switches (`schedule_tick`).
+  - Automatic frame deallocation on process termination (`free_user_page_table`).
+- **FPU / SSE Hardware Support (`kernel/src/fpu.rs`, `kernel/src/thread.rs`)**:
+  - Enabled SSE/FPU on BSP and AP cores (`CR0.EM=0`, `CR0.MP=1`, `CR4.OSFXSR=1`, `CR4.OSXMMEXCPT=1`, `fninit`).
+  - 16-byte aligned 512-byte `FxState` per thread, eagerly saved and restored across thread preemption using `fxsave64` and `fxrstor64`.
+- **Fast System Calls (`kernel/src/syscall.rs`)**:
   - `EFER.SCE`, `LSTAR`, `STAR`, and `FMASK` MSR configuration for low-overhead `SYSCALL`/`SYSRET` transitions.
   - Naked assembly entry (`syscall_entry`) with `swapgs` per-CPU stack switching and full user register preservation.
-  - POSIX-compatible system call numbers: `sys_yield` (0), `sys_exit` (1), `sys_write` (2), `sys_read` (3), `sys_open` (4), `sys_getpid` (6), `sys_uname` (7).
+  - POSIX-compatible system call numbers: `sys_yield` (0), `sys_exit` (1), `sys_write` (2), `sys_read` (3), `sys_open` (4), `sys_close` (5), `sys_getpid` (6), `sys_uname` (7), `sys_spawn` (8), `sys_wait` (9), `sys_sleep` (10), `sys_time` (11), `sys_mmap_anon` (12).
 - **ELF64 Executable Loader (`kernel/src/elf.rs`)**:
-  - Parses ELF64 binary format, validates magic and headers, and maps `PT_LOAD` segments with paging flags.
-  - Allocates and maps 32 KiB user stack at `0x0000_7FFF_FFFF_0000`.
+  - Parses ELF64 binary format, validates magic, headers, and segment virtual addresses.
+  - Maps `PT_LOAD` segments directly into the target process's isolated PML4 table.
   - Spawns ring-3 processes as preemptive scheduler-managed threads with dedicated kernel stack switching.
+
 
 ### 7. Graphical User Interface (GUI) & Window Compositor
 - **Display & BackBuffer Engine (`kernel/src/gfx/`)**:

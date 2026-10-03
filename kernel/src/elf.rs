@@ -265,7 +265,7 @@ pub unsafe fn enter_user_mode(entry_point: u64, user_rsp: u64) -> ! {
     user_jump_trampoline(entry_point, user_cs, rflags, user_rsp, user_ss);
 }
 
-/// Load an ELF binary by VFS path and execute in Ring 3 as a scheduler thread.
+/// Load an ELF binary by VFS path and execute in Ring 3 as an isolated process with its own PML4.
 pub fn spawn_user_process(path: &str) -> Result<crate::thread::ThreadId, &'static str> {
     let mut handle = vfs::open(path, vfs::OpenFlags::READ).map_err(|_| "Failed to open file")?;
     let meta = handle.metadata().map_err(|_| "Failed to read metadata")?;
@@ -273,18 +273,38 @@ pub fn spawn_user_process(path: &str) -> Result<crate::thread::ThreadId, &'stati
     handle.read(&mut buffer).map_err(|_| "Failed to read file")?;
 
     let offset = memory::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
-    let mut mapper = unsafe { memory::init(VirtAddr::new(offset)) };
     let mut frame_guard = memory::FRAME_ALLOCATOR.lock();
     let frame_allocator = frame_guard.as_mut().ok_or("No frame allocator")?;
 
-    let loaded = load_elf(&buffer, &mut mapper, frame_allocator).map_err(|_| "ELF loading failed")?;
+    // Allocate isolated per-process PML4 page table
+    let pml4_frame = memory::new_user_page_table(frame_allocator)
+        .ok_or("Failed to allocate per-process PML4")?;
+
+    let mut proc_mapper = unsafe {
+        memory::page_table_for_frame(pml4_frame, VirtAddr::new(offset))
+    };
+
+    let loaded = load_elf(&buffer, &mut proc_mapper, frame_allocator).map_err(|_| "ELF loading failed")?;
 
     drop(frame_guard);
 
-    let tid = crate::scheduler::spawn_user("user_proc", loaded.entry_point, loaded.user_stack_top);
+    // Register Process
+    let pid = crate::process::ProcessId::new();
+    let process = crate::process::Process {
+        pid,
+        name: alloc::string::String::from(path),
+        pml4: pml4_frame,
+        threads: alloc::vec::Vec::new(),
+        exit_code: None,
+    };
+    let proc_arc = crate::process::register_process(process);
+
+    let tid = crate::scheduler::spawn_user("user_proc", loaded.entry_point, loaded.user_stack_top, pid);
+    proc_arc.lock().threads.push(tid);
+
     serial_println!(
-        "[USER] Spawned user thread TID={} for '{}': RIP=0x{:X}, RSP=0x{:X}",
-        tid.0, path, loaded.entry_point, loaded.user_stack_top
+        "[USER] Spawned isolated user process PID={} TID={} for '{}': RIP=0x{:X}, RSP=0x{:X}, PML4=0x{:X}",
+        pid.0, tid.0, path, loaded.entry_point, loaded.user_stack_top, pml4_frame.start_address().as_u64()
     );
     Ok(tid)
 }

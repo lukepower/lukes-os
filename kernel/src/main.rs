@@ -27,6 +27,8 @@ mod smp;
 mod shell;
 mod syscall;
 mod elf;
+pub mod process;
+pub mod fpu;
 pub mod gfx;
 pub mod mouse;
 pub mod input;
@@ -53,6 +55,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
     interrupts::mask_pic_timer();
+    fpu::init();
 
     serial_println!("========================================");
     serial_println!("  Luke's OS v0.2.0 — Booting SMP Kernel");

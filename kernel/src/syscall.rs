@@ -17,6 +17,11 @@ pub const SYS_OPEN: u64 = 4;
 pub const SYS_CLOSE: u64 = 5;
 pub const SYS_GETPID: u64 = 6;
 pub const SYS_UNAME: u64 = 7;
+pub const SYS_SPAWN: u64 = 8;
+pub const SYS_WAIT: u64 = 9;
+pub const SYS_SLEEP: u64 = 10;
+pub const SYS_TIME: u64 = 11;
+pub const SYS_MMAP_ANON: u64 = 12;
 
 // POSIX error codes (negative)
 pub const ENOENT: i64 = -2;
@@ -286,6 +291,95 @@ extern "C" fn syscall_dispatcher(
             } else {
                 EINVAL
             }
+        }
+        SYS_SPAWN => {
+            // arg1: path ptr, arg2: len
+            let path_ptr = arg1;
+            let path_len = arg2 as usize;
+
+            let slice = match user_slice(path_ptr, path_len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+
+            if let Ok(path) = core::str::from_utf8(slice) {
+                match crate::elf::spawn_user_process(path) {
+                    Ok(tid) => tid.0 as i64,
+                    Err(_) => ENOENT,
+                }
+            } else {
+                EINVAL
+            }
+        }
+        SYS_WAIT => {
+            // arg1: pid
+            // Wait for thread to exit
+            let tid = crate::thread::ThreadId(arg1);
+            loop {
+                let threads = crate::scheduler::list_threads();
+                if !threads.iter().any(|t| t.id == tid.0) {
+                    break;
+                }
+                crate::scheduler::yield_now();
+            }
+            0
+        }
+        SYS_SLEEP => {
+            // arg1: milliseconds
+            let ms = arg1;
+            let start_ticks = crate::interrupts::ticks();
+            // LAPIC timer frequency is approx 100 Hz (1 tick = 10ms)
+            let ticks_to_wait = (ms + 9) / 10;
+            while crate::interrupts::ticks().saturating_sub(start_ticks) < ticks_to_wait {
+                crate::scheduler::yield_now();
+            }
+            0
+        }
+        SYS_TIME => {
+            // Returns milliseconds since boot
+            let ticks = crate::interrupts::ticks();
+            (ticks * 10) as i64
+        }
+        SYS_MMAP_ANON => {
+            // arg1: length in bytes
+            let len = arg1 as usize;
+            if len == 0 || len > 32 * 1024 * 1024 {
+                return EINVAL;
+            }
+
+            let pages_needed = (len + 4095) / 4096;
+            let mut frame_guard = crate::memory::FRAME_ALLOCATOR.lock();
+            let frame_allocator = match frame_guard.as_mut() {
+                Some(fa) => fa,
+                None => return ENOSYS,
+            };
+
+            // Allocate at top of user address space
+            static NEXT_USER_MMAP: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0x0000_6000_0000_0000);
+            let user_vaddr = NEXT_USER_MMAP.fetch_add((pages_needed as u64) * 4096, core::sync::atomic::Ordering::Relaxed);
+
+            use x86_64::structures::paging::{Mapper, Page, PageTableFlags, Size4KiB};
+            let offset = crate::memory::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            use x86_64::registers::control::Cr3;
+            let (cr3_frame, _) = Cr3::read();
+            let mut mapper = unsafe { crate::memory::page_table_for_frame(cr3_frame, x86_64::VirtAddr::new(offset)) };
+
+            let start_page: Page<Size4KiB> = Page::containing_address(x86_64::VirtAddr::new(user_vaddr));
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+            for i in 0..pages_needed {
+                let frame = match frame_allocator.allocate_frame_internal() {
+                    Some(f) => f,
+                    None => return -12, // ENOMEM
+                };
+                let page = start_page + i as u64;
+                unsafe {
+                    let _ = mapper.map_to(page, frame, flags, frame_allocator);
+                }
+            }
+
+            user_vaddr as i64
         }
         _ => {
             serial_println!("[SYSCALL] Unknown syscall: {}", num);

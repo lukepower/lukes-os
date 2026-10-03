@@ -24,12 +24,47 @@ This document serves as the persistent progress log and architectural changelog 
 - [x] **Phase 5: Graphical User Interface & User Space Hardening**
   - M0: User mode correctness fixes (GS base handling, Ring 3 interrupts swapgs, user pointer validation, non-hijacking process spawning).
   - M1: Display and BackBuffer abstractions, `embedded-graphics` DrawTarget, PS/2 mouse driver (IRQ12), unified input event system, kernel window compositor ("wm"), draggable windows, taskbar, software cursor, and in-window terminal shell.
+  - M2: Per-process page tables (PML4 lower-half isolation), preemption CR3 switching, FPU/SSE state management (fxsave64/fxrstor64), and extended process syscalls (`sys_spawn`, `sys_wait`, `sys_sleep`, `sys_time`, `sys_mmap_anon`).
 
 ---
 
 ## Detailed Milestone Log
 
-### [2026-10-03] Phase 5: Graphical User Interface & User Mode Hardening (M0 & M1)
+### [2026-10-03] Phase 5: Milestone M2 — Real Processes & Address Space Isolation
+
+#### 1. Per-Process Page Tables & Lower-Half Isolation (`memory.rs`, `process.rs`)
+- **Process Table & Registry (`kernel/src/process.rs`)**:
+  - Implemented `Process` struct tracking `pid`, `name`, `pml4`, threads, and exit codes.
+  - Global `PROCESS_TABLE` with `register_process`, `find_process`, and `remove_process`.
+- **Per-Process PML4 Tables (`kernel/src/memory.rs`)**:
+  - `new_user_page_table(frame_allocator)`: allocates a dedicated PML4 frame, zeros lower half (`0..256`), and mirrors upper half (`256..512`) kernel space.
+  - `page_table_for_frame(frame, offset)`: instantiates an `OffsetPageTable` for arbitrary PML4 frames.
+  - `free_user_page_table(frame, frame_allocator)`: recursively frees user-mapped page tables and frames upon process exit.
+- **Isolated ELF Loading (`kernel/src/elf.rs`)**:
+  - `spawn_user_process(path)` loads ELF segments into a freshly allocated per-process PML4.
+  - Registers the new `Process` and launches the primary user thread referencing its `ProcessId`.
+
+#### 2. Preemptive CR3 Context Switching (`scheduler.rs`, `thread.rs`)
+- Added `process_id` and `fx_state` fields to `Thread`.
+- In `schedule_tick`, if the next scheduled thread belongs to a user process, hardware `CR3` is updated to load that process's PML4.
+
+#### 3. FPU & SSE State Management (`fpu.rs`, `scheduler.rs`, `smp.rs`)
+- **Hardware Configuration (`kernel/src/fpu.rs`)**:
+  - Programmed `CR0` (`EM=0`, `MP=1`) and `CR4` (`OSFXSR=1`, `OSXMMEXCPT=1`) followed by `fninit` on BSP and all secondary AP cores.
+- **Thread FPU State Save & Restore (`kernel/src/thread.rs`, `scheduler.rs`)**:
+  - Defined 16-byte aligned 512-byte `FxState`.
+  - Added eager `fxsave64` and `fxrstor64` assembly routines inside `schedule_tick` to preserve floating-point and SIMD registers across preemption.
+
+#### 4. Extended Process System Calls (`syscall.rs`)
+- Implemented `SYS_SPAWN` (8): spawns a new isolated ring-3 ELF process and returns its TID.
+- Implemented `SYS_WAIT` (9): blocks until target thread finishes execution.
+- Implemented `SYS_SLEEP` (10): sleeps for specified milliseconds via LAPIC tick checks and yielding.
+- Implemented `SYS_TIME` (11): returns uptime in milliseconds since boot.
+- Implemented `SYS_MMAP_ANON` (12): dynamically allocates contiguous physical frames and maps them into user address space (`0x0000_6000_0000_0000+`) with user-accessible permissions.
+
+---
+
+### [2026-10-03] Phase 5: Milestones M0 & M1 — GUI Engine & User Mode Hardening
 
 #### 1. User Mode Correctness & Process Spawning (M0)
 - **GS Base & Interrupt Trampoline Isolation (`smp.rs`, `scheduler.rs`, `elf.rs`)**:

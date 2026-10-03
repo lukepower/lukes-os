@@ -297,6 +297,9 @@ extern "C" fn ap_entry(core_id: u64) -> ! {
     // Load IDT
     interrupts::init_idt();
 
+    // Enable FPU/SSE on AP
+    crate::fpu::init();
+
     // Set IA32_GS_BASE to this core's PerCpu struct
     unsafe {
         let ptr = PER_CPU_DATA[core_id].as_mut().unwrap() as *mut PerCpu;
