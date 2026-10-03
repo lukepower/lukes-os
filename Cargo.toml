@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["kernel", "runner"]
+default-members = ["runner"]
 
 [profile.dev]
 panic = "abort"
