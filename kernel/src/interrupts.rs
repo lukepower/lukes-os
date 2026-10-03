@@ -1,6 +1,8 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use crate::gdt;
+use crate::apic;
 use crate::{serial_println, serial_print, print};
 use pic8259::ChainedPics;
 use spin;
@@ -33,8 +35,17 @@ lazy_static! {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
+
+        // Local APIC Timer Preemptive ISR
+        unsafe {
+            idt[apic::TIMER_INTERRUPT_VECTOR]
+                .set_handler_addr(VirtAddr::new(crate::scheduler::timer_interrupt_asm as *const () as usize as u64));
+            idt[apic::RESCHEDULE_IPI_VECTOR]
+                .set_handler_addr(VirtAddr::new(crate::scheduler::timer_interrupt_asm as *const () as usize as u64));
+        }
+
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[apic::SPURIOUS_INTERRUPT_VECTOR].set_handler_fn(spurious_interrupt_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt
     };
@@ -42,6 +53,25 @@ lazy_static! {
 
 pub fn init_idt() {
     IDT.load();
+}
+
+static TICK_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn ticks() -> u64 {
+    TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn tick() {
+    TICK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn mask_pic_timer() {
+    unsafe {
+        // Mask IRQ 0 (timer) on master PIC (port 0x21), keep IRQ 1 (keyboard) unmasked
+        let mut port = x86_64::instructions::port::Port::<u8>::new(0x21);
+        let mask = port.read();
+        port.write(mask | 0x01); // Mask bit 0 (IRQ 0)
+    }
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
@@ -67,22 +97,8 @@ extern "x86-interrupt" fn page_fault_handler(
     panic!("PAGE FAULT — cannot continue");
 }
 
-static TICK_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-pub fn ticks() -> u64 {
-    TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    TICK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
-
-    // Signal that a reschedule is needed
-    crate::scheduler::on_timer_tick();
+extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Spurious interrupts do not require an EOI
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {

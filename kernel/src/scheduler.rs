@@ -1,136 +1,224 @@
-// Round-robin preemptive scheduler.
-//
-// Key design decisions:
-// - The SCHEDULER lock is a spinlock; we MUST NOT hold it across context switches.
-// - The timer IRQ uses try_lock() to avoid deadlock (single CPU).
-// - Context pointers are extracted before dropping the lock.
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use alloc::collections::VecDeque;
-use crate::thread::{Thread, ThreadState, Context, switch_context};
-use spin::Mutex;
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::apic;
+use crate::smp::{CORES_ONLINE, MAX_CPUS, PerCpu};
+use crate::sync::TicketLock;
+use crate::thread::{Thread, ThreadId, ThreadState};
 
-static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
-
-/// Set by the timer IRQ; checked by schedule_if_needed().
-static NEED_RESCHEDULE: AtomicBool = AtomicBool::new(false);
-
-pub struct Scheduler {
-    /// Currently running thread.
-    current: Thread,
-    /// Ready queue.
-    ready: VecDeque<Thread>,
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    pub id: u64,
+    pub name: &'static str,
+    pub state: ThreadState,
+    pub core_id: usize,
 }
 
-/// Initialize the scheduler with a bootstrap thread for the current (boot) context.
-pub fn init() {
-    let bootstrap = Thread::bootstrap("idle");
-    *SCHEDULER.lock() = Some(Scheduler {
-        current: bootstrap,
-        ready: VecDeque::new(),
-    });
-}
+static BLOCKED_THREADS: TicketLock<BTreeMap<ThreadId, Box<Thread>>> =
+    TicketLock::new(BTreeMap::new());
+static NEXT_SPAWN_CORE: AtomicUsize = AtomicUsize::new(0);
 
-/// Spawn a new kernel thread.
+pub fn init() {}
+
 pub fn spawn(name: &'static str, entry: fn()) {
-    let thread = Thread::new(name, entry);
-    let mut guard = SCHEDULER.lock();
-    if let Some(sched) = guard.as_mut() {
-        sched.ready.push_back(thread);
-    }
-}
+    let mut thread = Box::new(Thread::new(name, entry));
 
-/// Called from the timer interrupt — just sets the reschedule flag.
-/// We don't do the actual context switch here to avoid holding the
-/// SCHEDULER spinlock across a context switch (which would deadlock).
-pub fn on_timer_tick() {
-    NEED_RESCHEDULE.store(true, Ordering::Release);
-}
+    let num_cores = CORES_ONLINE.load(Ordering::Acquire).max(1);
+    let target_core = NEXT_SPAWN_CORE.fetch_add(1, Ordering::Relaxed) % num_cores;
+    thread.core_id = target_core;
 
-/// Perform the actual context switch if needed.
-/// Called from safe points (e.g., enable_and_hlt wrapper, yield_now).
-/// Interrupts should be disabled when calling this.
-fn do_schedule() {
-    // Pointers we need for the switch — extracted while holding the lock
-    let (old_ctx_ptr, new_ctx_ptr): (*mut Context, *const Context);
-
-    {
-        let mut guard = SCHEDULER.lock();
-        let sched = match guard.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-
-        if sched.ready.is_empty() {
-            return;
+    if let Some(target_percpu) = PerCpu::get(target_core) {
+        target_percpu.run_queue.lock().push_back(thread);
+        if target_core != 0 {
+            apic::send_reschedule_ipi(target_percpu.lapic_id);
         }
-
-        let mut next = match sched.ready.pop_front() {
-            Some(t) => t,
-            None => return,
-        };
-
-        next.state = ThreadState::Running;
-        sched.current.state = ThreadState::Ready;
-
-        // Swap
-        let old = core::mem::replace(&mut sched.current, next);
-        sched.ready.push_back(old);
-
-        // Get raw pointers
-        let old_thread = sched.ready.back_mut().unwrap();
-        old_ctx_ptr = &mut old_thread.context as *mut Context;
-        new_ctx_ptr = &sched.current.context as *const Context;
-
-        // Lock is dropped here
-    }
-
-    // Context switch happens WITHOUT the scheduler lock held
-    unsafe {
-        switch_context(old_ctx_ptr, new_ctx_ptr);
     }
 }
 
-/// Called by threads to check if a reschedule is pending and perform it.
-/// This is the safe entry point for preemptive scheduling.
-pub fn schedule() {
-    if NEED_RESCHEDULE.swap(false, Ordering::Acquire) {
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            do_schedule();
-        });
+pub fn current_thread_id() -> ThreadId {
+    let percpu = PerCpu::current();
+    percpu
+        .current_thread
+        .as_ref()
+        .map(|t| t.id)
+        .unwrap_or(ThreadId(percpu.core_id as u64))
+}
+
+pub fn block_current_thread() {
+    let percpu = PerCpu::current();
+    if let Some(cur) = percpu.current_thread.as_mut() {
+        cur.state = ThreadState::Blocked;
+    }
+    yield_now();
+}
+
+pub fn unblock_thread(id: ThreadId) {
+    if let Some(mut thread) = BLOCKED_THREADS.lock().remove(&id) {
+        thread.state = ThreadState::Ready;
+        let target_core = thread.core_id;
+        if let Some(target_percpu) = PerCpu::get(target_core) {
+            target_percpu.run_queue.lock().push_back(thread);
+            apic::send_reschedule_ipi(target_percpu.lapic_id);
+        }
     }
 }
 
-/// Mark the current thread as dead and switch to the next ready thread.
-/// Called when a thread's entry function returns.
 pub fn exit_current_thread() -> ! {
+    let percpu = PerCpu::current();
+    if let Some(cur) = percpu.current_thread.as_mut() {
+        cur.state = ThreadState::Dead;
+    }
+    yield_now();
     loop {
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            let mut guard = SCHEDULER.lock();
-            if let Some(sched) = guard.as_mut() {
-                sched.current.state = ThreadState::Dead;
-
-                if let Some(mut next) = sched.ready.pop_front() {
-                    next.state = ThreadState::Running;
-                    let _dead = core::mem::replace(&mut sched.current, next);
-
-                    let new_ctx_ptr = &sched.current.context as *const Context;
-                    drop(guard);
-
-                    let mut dummy = Context::empty();
-                    unsafe {
-                        switch_context(&mut dummy as *mut _, new_ctx_ptr);
-                    }
-                }
-            }
-        });
         x86_64::instructions::hlt();
     }
 }
 
-/// Voluntarily yield the current thread's time slice.
 pub fn yield_now() {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        do_schedule();
-    });
+    unsafe {
+        core::arch::asm!("int 0x20");
+    }
+}
+
+pub fn schedule() {
+    yield_now();
+}
+
+pub fn sleep(iterations: u64) {
+    for _ in 0..iterations {
+        yield_now();
+    }
+}
+
+pub fn list_threads() -> Vec<ThreadInfo> {
+    let mut list = Vec::new();
+    let num_cores = CORES_ONLINE.load(Ordering::Acquire).min(MAX_CPUS);
+    for core_id in 0..num_cores {
+        if let Some(cpu) = PerCpu::get(core_id) {
+            if let Some(cur) = &cpu.current_thread {
+                list.push(ThreadInfo {
+                    id: cur.id.0,
+                    name: cur.name,
+                    state: cur.state,
+                    core_id,
+                });
+            }
+            let guard = cpu.run_queue.lock();
+            for t in guard.iter() {
+                list.push(ThreadInfo {
+                    id: t.id.0,
+                    name: t.name,
+                    state: t.state,
+                    core_id,
+                });
+            }
+        }
+    }
+    list
+}
+
+#[unsafe(naked)]
+pub unsafe extern "C" fn timer_interrupt_asm() {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rbx",
+        "push rbp",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+
+        "mov rdi, rsp",
+        "call {schedule_tick}",
+        "mov rsp, rax",
+
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rbp",
+        "pop rbx",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+
+        "iretq",
+        schedule_tick = sym schedule_tick,
+    );
+}
+
+#[no_mangle]
+extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
+    apic::eoi();
+
+    let percpu = PerCpu::current();
+    percpu.ticks += 1;
+    let my_core = percpu.core_id;
+
+    if let Some(mut cur) = percpu.current_thread.take() {
+        cur.saved_rsp = current_rsp;
+        match cur.state {
+            ThreadState::Running => {
+                cur.state = ThreadState::Ready;
+                percpu.run_queue.lock().push_back(cur);
+            }
+            ThreadState::Blocked | ThreadState::Sleeping => {
+                BLOCKED_THREADS.lock().insert(cur.id, cur);
+            }
+            ThreadState::Dead => {}
+            ThreadState::Ready => {
+                percpu.run_queue.lock().push_back(cur);
+            }
+        }
+    }
+
+    // Work-Stealing: 1. Try local run queue
+    let mut next_thread = percpu.run_queue.lock().pop_front();
+
+    // 2. Work-stealing from other active cores
+    if next_thread.is_none() {
+        let active_cores = CORES_ONLINE.load(Ordering::Relaxed).min(MAX_CPUS);
+        for victim_id in 0..active_cores {
+            if victim_id != my_core {
+                if let Some(victim) = PerCpu::get(victim_id) {
+                    if let Some(mut guard) = victim.run_queue.try_lock() {
+                        if let Some(mut stolen) = guard.pop_back() {
+                            stolen.core_id = my_core;
+                            next_thread = Some(stolen);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback to idle thread
+    let thread_to_run = match next_thread {
+        Some(t) => t,
+        None => percpu.idle_thread.take().unwrap_or_else(|| {
+            Box::new(Thread::idle("idle_fallback", my_core))
+        }),
+    };
+
+    let next_rsp = thread_to_run.saved_rsp;
+    percpu.current_thread = Some(thread_to_run);
+
+    next_rsp
 }

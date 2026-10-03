@@ -54,6 +54,8 @@ fn main() {
         .arg("virtio-blk-pci,drive=hd0")
         .arg("-drive")
         .arg("id=hd0,if=none,format=raw,file=disk.img")
+        .arg("-smp")
+        .arg("4")
         .arg("-no-reboot")
         .arg("-no-shutdown");
     println!("Running: {:?}", cmd);

@@ -1,49 +1,75 @@
 use x86_64::VirtAddr;
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
-use lazy_static::lazy_static;
+use x86_64::instructions::tables::load_tss;
+use x86_64::instructions::segmentation::{CS, Segment, DS, ES, SS};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const MAX_CPUS: usize = 8;
+const STACK_SIZE: usize = 4096 * 4;
 
-lazy_static! {
-    static ref TSS: TaskStateSegment = {
-        let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 4096 * 5;
-            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+struct CpuGdtEntry {
+    tss: TaskStateSegment,
+    stack: [u8; STACK_SIZE],
+    gdt: GlobalDescriptorTable,
+    selectors: Selectors,
+}
 
-            let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(STACK));
-            let stack_end = stack_start + STACK_SIZE as u64;
-            stack_end
+#[derive(Clone, Copy)]
+pub struct Selectors {
+    pub code_selector: SegmentSelector,
+    pub data_selector: SegmentSelector,
+    pub tss_selector: SegmentSelector,
+}
+
+static mut CPU_GDTS: [Option<CpuGdtEntry>; MAX_CPUS] = [
+    None, None, None, None, None, None, None, None,
+];
+
+pub fn init_cpu(core_id: usize) {
+    if core_id >= MAX_CPUS {
+        panic!("core_id {} exceeds MAX_CPUS {}", core_id, MAX_CPUS);
+    }
+
+    unsafe {
+        let tss = TaskStateSegment::new();
+        let mut entry = CpuGdtEntry {
+            tss,
+            stack: [0; STACK_SIZE],
+            gdt: GlobalDescriptorTable::new(),
+            selectors: Selectors {
+                code_selector: SegmentSelector(0),
+                data_selector: SegmentSelector(0),
+                tss_selector: SegmentSelector(0),
+            },
         };
-        tss
-    };
-}
 
-lazy_static! {
-    static ref GDT: (GlobalDescriptorTable, Selectors) = {
-        let mut gdt = GlobalDescriptorTable::new();
-        let code_selector = gdt.append(Descriptor::kernel_code_segment());
-        let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(&TSS));
-        (gdt, Selectors { code_selector, data_selector, tss_selector })
-    };
-}
+        let stack_start = VirtAddr::from_ptr(entry.stack.as_ptr());
+        let stack_end = stack_start + STACK_SIZE as u64;
+        entry.tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
 
-struct Selectors {
-    code_selector: SegmentSelector,
-    #[allow(dead_code)]
-    data_selector: SegmentSelector,
-    tss_selector: SegmentSelector,
+        CPU_GDTS[core_id] = Some(entry);
+        let cpu_entry = CPU_GDTS[core_id].as_mut().unwrap();
+
+        let code_selector = cpu_entry.gdt.append(Descriptor::kernel_code_segment());
+        let data_selector = cpu_entry.gdt.append(Descriptor::kernel_data_segment());
+        let tss_selector = cpu_entry.gdt.append(Descriptor::tss_segment(&cpu_entry.tss));
+
+        cpu_entry.selectors = Selectors {
+            code_selector,
+            data_selector,
+            tss_selector,
+        };
+
+        cpu_entry.gdt.load();
+        CS::set_reg(code_selector);
+        DS::set_reg(data_selector);
+        ES::set_reg(data_selector);
+        SS::set_reg(data_selector);
+        load_tss(tss_selector);
+    }
 }
 
 pub fn init() {
-    use x86_64::instructions::tables::load_tss;
-    use x86_64::instructions::segmentation::{CS, Segment};
-
-    GDT.0.load();
-    unsafe {
-        CS::set_reg(GDT.1.code_selector);
-        load_tss(GDT.1.tss_selector);
-    }
+    init_cpu(0);
 }
