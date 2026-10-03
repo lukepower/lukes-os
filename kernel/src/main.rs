@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![allow(dead_code, unused_variables, static_mut_refs)]
 
 extern crate alloc;
 
