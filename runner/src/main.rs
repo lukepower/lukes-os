@@ -28,6 +28,56 @@ fn find_qemu() -> String {
 }
 
 fn main() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().unwrap();
+
+    println!("=== Compiling User Space Applications ===");
+    let user_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--target",
+            "x86_64-unknown-none",
+            "--release",
+            "--manifest-path",
+            "user/Cargo.toml",
+        ])
+        .current_dir(workspace_root)
+        .status()
+        .expect("Failed to execute cargo build for user workspace");
+    if !user_status.success() {
+        eprintln!("Error compiling user workspace!");
+        std::process::exit(user_status.code().unwrap_or(1));
+    }
+
+    println!("=== Compiling Kernel ===");
+    let kernel_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--target",
+            "x86_64-unknown-none",
+            "--package",
+            "kernel",
+        ])
+        .current_dir(workspace_root)
+        .status()
+        .expect("Failed to execute cargo build for kernel");
+    if !kernel_status.success() {
+        eprintln!("Error compiling kernel!");
+        std::process::exit(kernel_status.code().unwrap_or(1));
+    }
+
+    // Invoke cargo build on runner so its build.rs regenerates the boot images
+    println!("=== Packaging Boot Disk Images ===");
+    let package_status = Command::new("cargo")
+        .args(&["build", "--package", "runner"])
+        .current_dir(workspace_root)
+        .status()
+        .expect("Failed to package boot disk images");
+    if !package_status.success() {
+        eprintln!("Error packaging boot disk images!");
+        std::process::exit(package_status.code().unwrap_or(1));
+    }
+
     let bios_image = env!("BIOS_IMAGE");
     let qemu = find_qemu();
 
