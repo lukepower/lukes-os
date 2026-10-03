@@ -3,3 +3,4 @@
 *.img
 *.bin
 .cargo/config.local.toml
+*.o
