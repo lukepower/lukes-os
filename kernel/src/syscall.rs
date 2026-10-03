@@ -22,6 +22,11 @@ pub const SYS_WAIT: u64 = 9;
 pub const SYS_SLEEP: u64 = 10;
 pub const SYS_TIME: u64 = 11;
 pub const SYS_MMAP_ANON: u64 = 12;
+pub const SYS_WIN_CREATE: u64 = 20;
+pub const SYS_WIN_BUFFER: u64 = 21;
+pub const SYS_WIN_PRESENT: u64 = 22;
+pub const SYS_WIN_POLL: u64 = 23;
+pub const SYS_WIN_DESTROY: u64 = 24;
 
 // POSIX error codes (negative)
 pub const ENOENT: i64 = -2;
@@ -188,8 +193,8 @@ extern "C" fn syscall_dispatcher(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    _arg4: u64,
-    _arg5: u64,
+    arg4: u64,
+    arg5: u64,
 ) -> i64 {
     match num {
         SYS_YIELD => {
@@ -198,6 +203,9 @@ extern "C" fn syscall_dispatcher(
         }
         SYS_EXIT => {
             serial_println!("[SYSCALL] Thread exit requested with code: {}", arg1);
+            if let Some(pid) = crate::scheduler::current_process_id() {
+                crate::gfx::wm::destroy_process_windows(pid);
+            }
             crate::scheduler::exit_current_thread();
         }
         SYS_WRITE => {
@@ -380,6 +388,175 @@ extern "C" fn syscall_dispatcher(
             }
 
             user_vaddr as i64
+        }
+        SYS_WIN_CREATE => {
+            // arg1: width
+            // arg2: height
+            // arg3: title_ptr
+            // arg4: title_len
+            let width = arg1 as u32;
+            let height = arg2 as u32;
+            let title_ptr = arg3;
+            let title_len = arg4 as usize;
+
+            if width < 32 || width > 2560 || height < 32 || height > 1600 {
+                return EINVAL;
+            }
+
+            let title_slice = match user_slice(title_ptr, title_len) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+            let title = match core::str::from_utf8(title_slice) {
+                Ok(s) => s,
+                Err(_) => return EINVAL,
+            };
+
+            let pid = match crate::scheduler::current_process_id() {
+                Some(p) => p,
+                None => return ENOSYS,
+            };
+
+            // Calculate content area dimensions and buffer size
+            let cw = width.saturating_sub((crate::gfx::wm::BORDER_WIDTH * 2) as u32);
+            let ch = height.saturating_sub((crate::gfx::wm::TITLE_BAR_HEIGHT + crate::gfx::wm::BORDER_WIDTH * 2) as u32);
+            let byte_len = (cw as usize) * (ch as usize) * 4;
+            if byte_len == 0 {
+                return EINVAL;
+            }
+
+            // Allocate and map user buffer
+            let pages_needed = (byte_len + 4095) / 4096;
+            let mut frame_guard = crate::memory::FRAME_ALLOCATOR.lock();
+            let frame_allocator = match frame_guard.as_mut() {
+                Some(fa) => fa,
+                None => return ENOSYS,
+            };
+
+            static NEXT_WIN_MMAP: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0x0000_5000_0000_0000);
+            let user_vaddr = NEXT_WIN_MMAP.fetch_add((pages_needed as u64) * 4096, core::sync::atomic::Ordering::Relaxed);
+
+            use x86_64::structures::paging::{Mapper, Page, PageTableFlags, Size4KiB};
+            let offset = crate::memory::PHYS_MEM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            use x86_64::registers::control::Cr3;
+            let (cr3_frame, _) = Cr3::read();
+            let mut mapper = unsafe { crate::memory::page_table_for_frame(cr3_frame, x86_64::VirtAddr::new(offset)) };
+
+            let start_page: Page<Size4KiB> = Page::containing_address(x86_64::VirtAddr::new(user_vaddr));
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+            for i in 0..pages_needed {
+                let frame = match frame_allocator.allocate_frame_internal() {
+                    Some(f) => f,
+                    None => return -12, // ENOMEM
+                };
+                let page = start_page + i as u64;
+                unsafe {
+                    let _ = mapper.map_to(page, frame, flags, frame_allocator);
+                }
+            }
+
+            // Zero the user buffer memory
+            let buffer_slice = unsafe { core::slice::from_raw_parts_mut(user_vaddr as *mut u8, pages_needed * 4096) };
+            buffer_slice.fill(0);
+
+            let win_id = crate::gfx::wm::create_user_window(title, width, height, pid, user_vaddr);
+            win_id as i64
+        }
+        SYS_WIN_BUFFER => {
+            // arg1: win_id
+            let win_id = arg1 as u32;
+            let pid = match crate::scheduler::current_process_id() {
+                Some(p) => p,
+                None => return ENOSYS,
+            };
+
+            match crate::gfx::wm::get_window_buffer_vaddr(win_id, pid) {
+                Some(vaddr) => vaddr as i64,
+                None => ENOENT,
+            }
+        }
+        SYS_WIN_PRESENT => {
+            // arg1: win_id
+            // arg2: x
+            // arg3: y
+            // arg4: w
+            // arg5: h
+            let win_id = arg1 as u32;
+            let x = arg2 as u32;
+            let y = arg3 as u32;
+            let w = arg4 as u32;
+            let h = arg5 as u32;
+
+            let pid = match crate::scheduler::current_process_id() {
+                Some(p) => p,
+                None => return ENOSYS,
+            };
+
+            let vaddr = match crate::gfx::wm::get_window_buffer_vaddr(win_id, pid) {
+                Some(va) => va,
+                None => return ENOENT,
+            };
+
+            // Read pixels from user buffer
+            // Maximum reasonable window surface: 2560 * 1600 * 4
+            let max_pixels = 2560 * 1600;
+            let slice = match user_slice(vaddr, max_pixels * 4) {
+                Ok(s) => unsafe { core::slice::from_raw_parts(s.as_ptr() as *const u32, max_pixels) },
+                Err(err) => return err,
+            };
+
+            if crate::gfx::wm::copy_to_window_content(win_id, pid, slice, x, y, w, h) {
+                0
+            } else {
+                EINVAL
+            }
+        }
+        SYS_WIN_POLL => {
+            // arg1: win_id
+            // arg2: event_ptr (*mut WmEvent)
+            let win_id = arg1 as u32;
+            let event_ptr = arg2;
+
+            let pid = match crate::scheduler::current_process_id() {
+                Some(p) => p,
+                None => return ENOSYS,
+            };
+
+            let event_bytes = match user_slice_mut(event_ptr, core::mem::size_of::<crate::gfx::wm::WmEvent>()) {
+                Ok(s) => s,
+                Err(err) => return err,
+            };
+
+            if let Some(event) = crate::gfx::wm::poll_window_event(win_id, pid) {
+                let event_slice = unsafe {
+                    core::slice::from_raw_parts(
+                        &event as *const crate::gfx::wm::WmEvent as *const u8,
+                        core::mem::size_of::<crate::gfx::wm::WmEvent>(),
+                    )
+                };
+                event_bytes.copy_from_slice(event_slice);
+                1
+            } else {
+                0
+            }
+        }
+        SYS_WIN_DESTROY => {
+            // arg1: win_id
+            let win_id = arg1 as u32;
+            let pid = match crate::scheduler::current_process_id() {
+                Some(p) => p,
+                None => return ENOSYS,
+            };
+
+            // Verify window belongs to process
+            if crate::gfx::wm::get_window_buffer_vaddr(win_id, pid).is_some() {
+                crate::gfx::wm::destroy_window(win_id);
+                0
+            } else {
+                ENOENT
+            }
         }
         _ => {
             serial_println!("[SYSCALL] Unknown syscall: {}", num);

@@ -100,3 +100,30 @@ Luke's OS uses hardware-accelerated MSR-based `syscall`/`sysretq` instructions.
 #### 24: `sys_win_destroy`
 - **Signature:** `sys_win_destroy(win_id: u32) -> i64`
 - **Description:** Destroys window and unmaps surface.
+
+---
+
+### Window Event Structure (`Event`)
+
+```rust
+#[repr(C)]
+pub struct Event {
+    pub kind: u32,
+    pub a: i32,
+    pub b: i32,
+    pub c: u32,
+}
+```
+
+- `KEY_DOWN = 1`: `a = keycode`, `b = ch as i32`, `c = 1`
+- `KEY_UP = 2`: `a = keycode`, `b = ch as i32`, `c = 0`
+- `CHAR = 3`: `a = ch as i32`
+- `MOUSE_MOVE = 4`: `a = local_x`, `b = local_y`
+- `MOUSE_DOWN = 5`: `a = local_x`, `b = local_y`
+- `MOUSE_UP = 6`: `a = local_x`, `b = local_y`
+- `SCROLL = 7`: `a = delta`
+- `RESIZE = 8`: `a = new_width`, `b = new_height`
+- `CLOSE = 9`: Window close requested
+- `FOCUS_IN = 10`: Window focused
+- `FOCUS_OUT = 11`: Window lost focus
+

@@ -15,6 +15,29 @@ pub const TASKBAR_HEIGHT: i32 = 28;
 
 pub static GUI_MODE: AtomicBool = AtomicBool::new(false);
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmEvent {
+    pub kind: u32,
+    pub a: i32,
+    pub b: i32,
+    pub c: u32,
+}
+
+pub mod event_kind {
+    pub const KEY_DOWN: u32 = 1;
+    pub const KEY_UP: u32 = 2;
+    pub const CHAR: u32 = 3;
+    pub const MOUSE_MOVE: u32 = 4;
+    pub const MOUSE_DOWN: u32 = 5;
+    pub const MOUSE_UP: u32 = 6;
+    pub const SCROLL: u32 = 7;
+    pub const RESIZE: u32 = 8;
+    pub const CLOSE: u32 = 9;
+    pub const FOCUS_IN: u32 = 10;
+    pub const FOCUS_OUT: u32 = 11;
+}
+
 pub struct Window {
     pub id: u32,
     pub title: String,
@@ -25,6 +48,9 @@ pub struct Window {
     pub content_height: u32,
     pub dirty: bool,
     pub closable: bool,
+    pub owner_pid: Option<crate::process::ProcessId>,
+    pub user_buffer_vaddr: u64,
+    pub events: alloc::collections::VecDeque<WmEvent>,
 }
 
 impl Window {
@@ -44,6 +70,9 @@ impl Window {
             content_height,
             dirty: true,
             closable,
+            owner_pid: None,
+            user_buffer_vaddr: 0,
+            events: alloc::collections::VecDeque::new(),
         }
     }
 
@@ -111,6 +140,103 @@ pub fn create_window(title: &str, x: i32, y: i32, width: u32, height: u32, closa
     wm.focused_window = Some(id);
     id
 }
+
+/// Create a window owned by a user process with a user-accessible buffer address
+pub fn create_user_window(
+    title: &str,
+    width: u32,
+    height: u32,
+    owner_pid: crate::process::ProcessId,
+    user_buffer_vaddr: u64,
+) -> u32 {
+    let mut wm = WM.lock();
+    let id = wm.next_id;
+    wm.next_id += 1;
+
+    let z = wm.windows.len() as u32;
+    // Position cascade: 60 + id*30
+    let x = 60 + ((id as i32) * 20) % 400;
+    let y = 60 + ((id as i32) * 20) % 250;
+    let mut win = Window::new(id, String::from(title), Rect::new(x, y, width, height), true);
+    win.z = z;
+    win.owner_pid = Some(owner_pid);
+    win.user_buffer_vaddr = user_buffer_vaddr;
+
+    wm.windows.push(win);
+    wm.focused_window = Some(id);
+    id
+}
+
+pub fn destroy_window(win_id: u32) {
+    let mut wm = WM.lock();
+    if let Some(pos) = wm.windows.iter().position(|w| w.id == win_id) {
+        wm.windows.remove(pos);
+        if wm.focused_window == Some(win_id) {
+            wm.focused_window = wm.windows.last().map(|w| w.id);
+        }
+    }
+}
+
+pub fn destroy_process_windows(pid: crate::process::ProcessId) {
+    let mut wm = WM.lock();
+    wm.windows.retain(|w| w.owner_pid != Some(pid));
+    if let Some(fid) = wm.focused_window {
+        if !wm.windows.iter().any(|w| w.id == fid) {
+            wm.focused_window = wm.windows.last().map(|w| w.id);
+        }
+    }
+}
+
+pub fn get_window_buffer_vaddr(win_id: u32, pid: crate::process::ProcessId) -> Option<u64> {
+    let wm = WM.lock();
+    wm.windows.iter().find(|w| w.id == win_id && w.owner_pid == Some(pid)).map(|w| w.user_buffer_vaddr)
+}
+
+pub fn copy_to_window_content(
+    win_id: u32,
+    pid: crate::process::ProcessId,
+    user_slice: &[u32],
+    damage_x: u32,
+    damage_y: u32,
+    damage_w: u32,
+    damage_h: u32,
+) -> bool {
+    let mut wm = WM.lock();
+    if let Some(win) = wm.windows.iter_mut().find(|w| w.id == win_id && w.owner_pid == Some(pid)) {
+        let cw = win.content_width as usize;
+        let ch = win.content_height as usize;
+        let total_pixels = cw * ch;
+        if user_slice.len() < total_pixels {
+            return false;
+        }
+
+        let x_end = (damage_x + damage_w).min(win.content_width) as usize;
+        let y_end = (damage_y + damage_h).min(win.content_height) as usize;
+        let x_start = damage_x as usize;
+        let y_start = damage_y as usize;
+
+        for y in y_start..y_end {
+            let row_offset = y * cw;
+            let src_row = &user_slice[row_offset + x_start..row_offset + x_end];
+            let dst_row = &mut win.content[row_offset + x_start..row_offset + x_end];
+            dst_row.copy_from_slice(src_row);
+        }
+        win.dirty = true;
+        true
+    } else {
+        false
+    }
+}
+
+pub fn poll_window_event(win_id: u32, pid: crate::process::ProcessId) -> Option<WmEvent> {
+    let mut wm = WM.lock();
+    if let Some(win) = wm.windows.iter_mut().find(|w| w.id == win_id && w.owner_pid == Some(pid)) {
+        win.events.pop_front()
+    } else {
+        None
+    }
+}
+
 
 /// Software mouse cursor bitmap (12x18 arrow)
 const CURSOR_WIDTH: usize = 12;
@@ -296,6 +422,16 @@ pub fn handle_input_events() {
                         win.rect.x = cx - grab_x;
                         win.rect.y = cy - grab_y;
                     }
+                } else if let Some(fid) = wm.focused_window {
+                    if let Some(win) = wm.windows.iter_mut().find(|w| w.id == fid) {
+                        let c_rect = win.content_rect();
+                        win.events.push_back(WmEvent {
+                            kind: event_kind::MOUSE_MOVE,
+                            a: cx - c_rect.x,
+                            b: cy - c_rect.y,
+                            c: 0,
+                        });
+                    }
                 }
             }
             InputEvent::MouseButton { button, pressed } => {
@@ -329,13 +465,31 @@ pub fn handle_input_events() {
                         if let Some(idx) = clicked_win_idx {
                             let win_id = wm.windows[idx].id;
                             if clicked_close {
-                                wm.windows.remove(idx);
-                                if wm.focused_window == Some(win_id) {
-                                    wm.focused_window = wm.windows.last().map(|w| w.id);
+                                // Push CLOSE event to window
+                                wm.windows[idx].events.push_back(WmEvent {
+                                    kind: event_kind::CLOSE,
+                                    a: 0,
+                                    b: 0,
+                                    c: 0,
+                                });
+
+                                // If this window is a kernel window (no owner_pid), remove it immediately.
+                                // If owned by a user process, allow the process to receive CLOSE and call SYS_WIN_DESTROY or SYS_EXIT.
+                                if wm.windows[idx].owner_pid.is_none() {
+                                    wm.windows.remove(idx);
+                                    if wm.focused_window == Some(win_id) {
+                                        wm.focused_window = wm.windows.last().map(|w| w.id);
+                                    }
                                 }
                             } else {
                                 // Raise window to top
-                                let win = wm.windows.remove(idx);
+                                let mut win = wm.windows.remove(idx);
+                                win.events.push_back(WmEvent {
+                                    kind: event_kind::FOCUS_IN,
+                                    a: 0,
+                                    b: 0,
+                                    c: 0,
+                                });
                                 wm.windows.push(win);
                                 wm.focused_window = Some(win_id);
 
@@ -344,6 +498,18 @@ pub fn handle_input_events() {
                                     let grab_x = mx - win_ref.rect.x;
                                     let grab_y = my - win_ref.rect.y;
                                     wm.dragging_window = Some((win_id, grab_x, grab_y));
+                                } else {
+                                    // Click inside content area: dispatch MOUSE_DOWN
+                                    let win_ref = wm.windows.last_mut().unwrap();
+                                    let c_rect = win_ref.content_rect();
+                                    if c_rect.contains_point(mx, my) {
+                                        win_ref.events.push_back(WmEvent {
+                                            kind: event_kind::MOUSE_DOWN,
+                                            a: mx - c_rect.x,
+                                            b: my - c_rect.y,
+                                            c: 0,
+                                        });
+                                    }
                                 }
                             }
                         } else {
@@ -365,16 +531,48 @@ pub fn handle_input_events() {
                     } else {
                         // Release drag
                         wm.dragging_window = None;
+                        let cur_x = wm.cursor_x;
+                        let cur_y = wm.cursor_y;
+                        if let Some(fid) = wm.focused_window {
+                            if let Some(win) = wm.windows.iter_mut().find(|w| w.id == fid) {
+                                let c_rect = win.content_rect();
+                                win.events.push_back(WmEvent {
+                                    kind: event_kind::MOUSE_UP,
+                                    a: cur_x - c_rect.x,
+                                    b: cur_y - c_rect.y,
+                                    c: 0,
+                                });
+                            }
+                        }
                     }
                 }
             }
-            InputEvent::Key { ch, pressed, .. } => {
-                if pressed {
-                    if let Some(c) = ch {
-                        // Forward keystroke to focused console window (Terminal)
-                        // If focused window is terminal (id == 1), push to keyboard buffer
-                        if wm.focused_window == Some(1) {
-                            crate::keyboard::push_char(c);
+            InputEvent::Key { ch, code, pressed } => {
+                if let Some(fid) = wm.focused_window {
+                    if fid == 1 {
+                        // Forward keystroke to Terminal window
+                        if pressed {
+                            if let Some(c) = ch {
+                                crate::keyboard::push_char(c);
+                            }
+                        }
+                    } else if let Some(win) = wm.windows.iter_mut().find(|w| w.id == fid) {
+                        let kind = if pressed { event_kind::KEY_DOWN } else { event_kind::KEY_UP };
+                        win.events.push_back(WmEvent {
+                            kind,
+                            a: code as i32,
+                            b: ch.map(|c| c as i32).unwrap_or(0),
+                            c: if pressed { 1 } else { 0 },
+                        });
+                        if pressed {
+                            if let Some(c) = ch {
+                                win.events.push_back(WmEvent {
+                                    kind: event_kind::CHAR,
+                                    a: c as i32,
+                                    b: 0,
+                                    c: 0,
+                                });
+                            }
                         }
                     }
                 }

@@ -68,6 +68,14 @@ pub fn current_thread_id() -> ThreadId {
         .unwrap_or(ThreadId(percpu.core_id as u64))
 }
 
+pub fn current_process_id() -> Option<crate::process::ProcessId> {
+    let percpu = PerCpu::current();
+    percpu
+        .current_thread
+        .as_ref()
+        .and_then(|t| t.process_id)
+}
+
 pub fn block_current_thread() {
     let percpu = PerCpu::current();
     if let Some(cur) = percpu.current_thread.as_mut() {
@@ -253,7 +261,7 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
     }
 
     // 3. Fallback to idle thread
-    let mut thread_to_run = match next_thread {
+    let thread_to_run = match next_thread {
         Some(t) => t,
         None => percpu.idle_thread.take().unwrap_or_else(|| {
             Box::new(Thread::idle("idle_fallback", my_core))
