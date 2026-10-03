@@ -108,9 +108,11 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
-
-    if let Some(ch) = crate::keyboard::process_scancode(scancode) {
-        crate::keyboard::push_char(ch);
+    let ch = crate::keyboard::process_scancode(scancode);
+    if !crate::gfx::wm::GUI_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+        if let Some(c) = ch {
+            crate::keyboard::push_char(c);
+        }
     }
 
     unsafe {
