@@ -5,11 +5,21 @@ fn main() {
     let kernel_path = {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.parent().unwrap();
-        workspace_root
+        let release = workspace_root
+            .join("target")
+            .join("x86_64-unknown-none")
+            .join("release")
+            .join("kernel");
+        let debug = workspace_root
             .join("target")
             .join("x86_64-unknown-none")
             .join("debug")
-            .join("kernel")
+            .join("kernel");
+        if release.exists() {
+            release
+        } else {
+            debug
+        }
     };
 
     println!("cargo:rerun-if-changed={}", kernel_path.display());

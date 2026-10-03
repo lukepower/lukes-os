@@ -15,6 +15,7 @@ mod thread;
 mod scheduler;
 mod vfs;
 mod ramfs;
+mod lukefs;
 mod pci;
 mod block;
 mod virtio_blk;
@@ -23,6 +24,9 @@ mod acpi;
 mod apic;
 mod sync;
 mod smp;
+mod shell;
+mod syscall;
+mod elf;
 
 use alloc::{string::String, vec, vec::Vec};
 use bootloader_api::{config::Mapping, entry_point, BootInfo};
@@ -169,40 +173,49 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         println!("[OK] SMP online: {} CPU cores active", online);
     }
 
-    // ── Filesystem ──
-    let ramfs = ramfs::RamFs::new();
-    vfs::mount_root(ramfs.clone());
-    serial_println!("[OK] RamFS mounted at /");
-
-    let root = vfs::root().expect("Root FS not mounted");
-    let tmp = root.mkdir("tmp").expect("failed to create /tmp");
-    let _dev = root.mkdir("dev").expect("failed to create /dev");
-    let _proc = root.mkdir("proc").expect("failed to create /proc");
-
-    let hello = tmp.create("hello.txt").expect("failed to create hello.txt");
-    hello.write(0, b"Hello from RamFS!").expect("write failed");
-
-    let mut buf = [0u8; 20];
-    let bytes_read = hello.read(0, &mut buf).expect("read failed");
-    let content = core::str::from_utf8(&buf[..bytes_read]).unwrap();
-    serial_println!("[OK] Read from /tmp/hello.txt: '{}'", content);
-
-    // ── PCI Enumeration ──
+    // ── PCI Enumeration & VirtIO Storage ──
     serial_println!("Scanning PCI bus...");
     pci::scan_bus();
 
-    // ── VirtIO Driver ──
     virtio_blk::init();
-    let driver = virtio_blk::VirtIoBlockDevice;
-    use block::BlockDevice;
-    let mut block_buf = [0u8; 512];
-    match driver.read_block(0, &mut block_buf) {
-        Ok(_) => {
-            let s = core::str::from_utf8(&block_buf[0..13]).unwrap_or("Inv UTF8");
-            serial_println!("[OK] VirtIO Disk Read Sector 0: '{}'", s);
-        }
-        Err(e) => serial_println!("[WARN] VirtIO read failed: {:?}", e),
+
+    // ── Filesystem (VFS) ──
+    let ramfs = ramfs::RamFs::new();
+    vfs::mount_root(ramfs);
+    serial_println!("[OK] RamFS mounted at /");
+
+    let _ = vfs::mkdir("/tmp");
+    let _ = vfs::mkdir("/dev");
+    let _ = vfs::mkdir("/proc");
+    let _ = vfs::mkdir("/disk");
+
+    if let Ok(mut handle) = vfs::open("/tmp/hello.txt", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+        let _ = handle.write(b"Hello from RamFS!");
+        serial_println!("[OK] Created and wrote to /tmp/hello.txt");
     }
+
+    // Attempt mounting persistent LukeFs on VirtIO disk
+    let virtio_dev = alloc::sync::Arc::new(virtio_blk::VirtIoBlockDevice);
+    match lukefs::LukeFs::mount(virtio_dev) {
+        Ok(lfs) => {
+            if let Ok(_) = vfs::mount("/disk", lfs) {
+                serial_println!("[OK] LukeFs mounted persistently at /disk");
+                println!("[OK] LukeFs mounted at /disk (VirtIO disk)");
+
+                // Check or write a greeting file to persistent storage
+                if let Ok(mut disk_file) = vfs::open("/disk/welcome.txt", vfs::OpenFlags::CREATE_OR_TRUNCATE) {
+                    let _ = disk_file.write(b"Welcome to Luke's OS Persistent Storage on VirtIO!");
+                    serial_println!("[OK] Wrote welcome message to /disk/welcome.txt");
+                }
+            }
+        }
+        Err(e) => {
+            serial_println!("[WARN] Could not mount LukeFs on VirtIO device: {:?}", e);
+        }
+    }
+
+    // ── Fast Syscall (SYSCALL/SYSRET) ──
+    syscall::init();
 
     // ── Work-Stealing Scheduler ──
     scheduler::init();
@@ -257,6 +270,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial_println!("[Checker] Finished");
     });
 
+    // ── Interactive Shell Thread ──
+    scheduler::spawn("shell", || {
+        shell::shell_main();
+    });
+
     // ── Enable interrupts on BSP ──
     x86_64::instructions::interrupts::enable();
     serial_println!("[OK] Interrupts enabled on BSP (LAPIC timer ticking)");
@@ -268,6 +286,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
+
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {

@@ -3,7 +3,7 @@ use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use crate::gdt;
 use crate::apic;
-use crate::{serial_println, serial_print, print};
+use crate::serial_println;
 use pic8259::ChainedPics;
 use spin;
 
@@ -108,8 +108,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let scancode: u8 = unsafe { port.read() };
 
     if let Some(ch) = crate::keyboard::process_scancode(scancode) {
-        serial_print!("{}", ch);
-        print!("{}", ch);
+        crate::keyboard::push_char(ch);
     }
 
     unsafe {

@@ -26,7 +26,9 @@ static AP_READY_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[repr(C, align(64))]
 pub struct PerCpu {
-    pub self_ptr: *mut PerCpu,
+    pub self_ptr: *mut PerCpu,         // GS:[0]
+    pub kernel_syscall_stack: u64,     // GS:[8]
+    pub user_rsp_scratch: u64,         // GS:[16]
     pub core_id: usize,
     pub lapic_id: u8,
     pub active: bool,
@@ -64,8 +66,14 @@ impl PerCpu {
 
 pub fn init_bsp(bsp_lapic_id: u8) {
     unsafe {
+        let syscall_stack = alloc::vec![0u8; 4096 * 4].into_boxed_slice();
+        let syscall_stack_top = (syscall_stack.as_ptr() as u64 + 4096 * 4) & !0xF;
+        core::mem::forget(syscall_stack);
+
         let percpu = PerCpu {
             self_ptr: core::ptr::null_mut(),
+            kernel_syscall_stack: syscall_stack_top,
+            user_rsp_scratch: 0,
             core_id: 0,
             lapic_id: bsp_lapic_id,
             active: true,
@@ -199,7 +207,7 @@ pub fn boot_aps(ap_apic_ids: &[u8]) {
         AP_READY_FLAG.store(false, Ordering::SeqCst);
 
         // Allocate a dedicated 64 KiB kernel boot stack for this AP
-        let stack = Box::new([0u8; 4096 * 16]);
+        let stack = alloc::vec![0u8; 4096 * 16].into_boxed_slice();
         let stack_top = (stack.as_ptr() as u64 + 4096 * 16) & !0xF;
         // Leak stack so it lives for the AP's lifetime
         core::mem::forget(stack);
@@ -214,9 +222,15 @@ pub fn boot_aps(ap_apic_ids: &[u8]) {
             // 0x8020: Core ID
             core::ptr::write((trampoline_virt.add(0x20)) as *mut u64, core_id as u64);
 
+            let ap_syscall_stack = alloc::vec![0u8; 4096 * 4].into_boxed_slice();
+            let ap_syscall_stack_top = (ap_syscall_stack.as_ptr() as u64 + 4096 * 4) & !0xF;
+            core::mem::forget(ap_syscall_stack);
+
             // Initialize PerCpu structure for this AP
             let percpu = PerCpu {
                 self_ptr: core::ptr::null_mut(),
+                kernel_syscall_stack: ap_syscall_stack_top,
+                user_rsp_scratch: 0,
                 core_id,
                 lapic_id: apic_id,
                 active: true,

@@ -83,7 +83,7 @@ impl Thread {
     pub fn new(name: &'static str, entry: fn()) -> Self {
         let id = ThreadId::new();
 
-        let stack = Box::new([0u8; STACK_SIZE]);
+        let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
         let stack_top = (stack.as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
 
         // Reserve space for Context on top of the stack

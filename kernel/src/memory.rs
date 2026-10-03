@@ -203,3 +203,14 @@ impl FrameDeallocator<Size4KiB> for BootInfoFrameAllocator {
         self.deallocate_frame(frame);
     }
 }
+
+/// Query current physical frame allocator metrics (total, allocated, free bytes).
+pub fn physical_memory_stats() -> Option<(u64, u64, u64)> {
+    let guard = FRAME_ALLOCATOR.lock();
+    guard.as_ref().map(|alloc| {
+        let total = alloc.total_memory_bytes();
+        let free = alloc.free_memory_bytes();
+        let used = total.saturating_sub(free);
+        (total, used, free)
+    })
+}

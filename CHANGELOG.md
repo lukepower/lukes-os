@@ -10,16 +10,137 @@ This document serves as the persistent progress log and architectural changelog 
   - Git repository cleanup, `.gitignore`, asset relocation, build toolchain fixes, `virtio-drivers` 0.12 compatibility.
 - [x] **Phase 1: Core Kernel Architecture, Memory Overhaul & SMP Bringup**
   - High-performance O(1) physical frame allocator, contiguous DMA allocation for VirtIO, dynamic heap expansion, Symmetric Multiprocessing (SMP / ACPI / APIC) bringup, ticket locks, sleeping mutexes, preemptive timer interrupt handler, and work-stealing scheduler.
-- [ ] **Phase 2: Input Subsystem & Interactive Shell**
-  - Interrupt-safe ring buffer for keyboard input, kernel stdin abstraction, interactive command shell (`help`, `ps`, `mem`, `ls`, `cat`, `lspci`).
-- [ ] **Phase 3: Storage & Filesystem Expansion**
-  - VFS path resolution (`vfs::open("/path/to/file")`), persistent filesystem driver (FAT32/custom block FS) on top of VirtIO block device.
-- [ ] **Phase 4: User Space & System Calls**
-  - User mode transitions (Ring 3), TSS RSP0 switching, system call interface (`syscall`/`sysret`), ELF executable loader.
+- [x] **Phase 2: Input Subsystem & Interactive Shell**
+  - Interrupt-safe ring buffer for keyboard input, stdin abstraction (`read_char`, `read_line`), backspace & clear screen support in framebuffer console, and fully interactive kernel shell thread (`help`, `clear`, `mem`, `ps`/`threads`, `lspci`, `ls`, `cat`, `touch`, `mkdir`, `echo`, `uname`).
+- [x] **Phase 3: Storage & Filesystem Expansion**
+  - Extensible Virtual File System (VFS) with global `MountTable`, multi-mount resolution, `FileHandle`, `OpenFlags`, and `SeekFrom`.
+  - Persistent block filesystem `LukeFs` (`kernel/src/lukefs.rs`) on top of VirtIO block device mounted at `/disk`.
+  - Interactive shell directory navigation (`cd`, `pwd`), file manipulation (`rm`, `write`, `sync`), and relative/absolute path resolution.
+- [x] **Phase 4: User Space & System Calls**
+  - User mode transitions (Ring 3), User segment descriptors in GDT, TSS RSP0 switching.
+  - Fast system call interface via `SYSCALL`/`SYSRET` MSR configuration (`EFER.SCE`, `LSTAR`, `STAR`, `FMASK`).
+  - ELF64 executable loader (`kernel/src/elf.rs`), program header mapper (`PT_LOAD`), user stack allocation.
+  - Shell commands `exec`/`run` and `syscall-test`.
 
 ---
 
 ## Detailed Milestone Log
+
+### [2026-10-03] Phase 4: User Space Isolation, System Calls & ELF Loader
+
+#### 1. Segment Descriptors & TSS RSP0 (`kernel/src/gdt.rs`)
+- **User Mode Segments**:
+  - Added User Data Segment (DPL 3, selector index 3) and User Code Segment (DPL 3, selector index 4) to every CPU core's GDT.
+  - Exported `selectors(core_id)` returning `user_code_selector` and `user_data_selector`.
+- **Privilege Stack Switching (`RSP0`)**:
+  - Implemented `set_rsp0(core_id, rsp0)` modifying `TSS.privilege_stack_table[0]` dynamically.
+  - Configured each core's dedicated kernel stack so hardware automatically loads a secure kernel stack upon interrupts or privilege escalation from Ring 3.
+
+#### 2. Fast System Call Architecture (`kernel/src/syscall.rs`, `kernel/src/smp.rs`)
+- **MSR Hardware Enablement**:
+  - Configured `IA32_EFER.SCE` (System Call Extensions).
+  - Programmed `IA32_STAR` with kernel and user segment bases (`0x08` for kernel, `0x13` for user).
+  - Programmed `IA32_LSTAR` with the 64-bit address of `syscall_entry`.
+  - Programmed `IA32_FMASK` to automatically mask `IF` (interrupts), `TF` (trap), and `DF` (direction) flags on entry.
+- **Naked Assembly Trampoline (`syscall_entry`)**:
+  - Performs `swapgs` to access per-CPU state.
+  - Saves user `RSP` in `PerCpu.user_rsp_scratch` (`GS:[16]`) and loads `PerCpu.kernel_syscall_stack` (`GS:[8]`).
+  - Pushes user context (`RSP`, `RFLAGS`, `RIP`, callee-saved registers) and invokes `syscall_dispatcher`.
+  - Restores user registers, executes `swapgs`, and executes `sysretq` to return cleanly to Ring 3.
+- **Dispatcher Implementation**:
+  - `SYS_YIELD` (0): Cooperatively yields CPU via `scheduler::yield_now()`.
+  - `SYS_EXIT` (1): Terminates calling thread via `scheduler::exit_current_thread()`.
+  - `SYS_WRITE` (2): Writes buffer to stdout/stderr or serial log.
+  - `SYS_READ` (3): Reads character from stdin via `keyboard::read_char()`.
+  - `SYS_OPEN` (4): Opens or creates VFS files by path.
+  - `SYS_GETPID` (6): Returns thread ID.
+  - `SYS_UNAME` (7): Returns OS version information.
+
+#### 3. ELF64 Executable Loader & Ring 3 Execution (`kernel/src/elf.rs`)
+- **ELF64 Parser**:
+  - Validates `ELF_MAGIC`, 64-bit architecture (`ELF_CLASS_64`), little-endian format, and executable types (`ET_EXEC` / `ET_DYN`).
+  - Parses Program Headers and maps `PT_LOAD` segments to physical frames with appropriate permissions (`USER_ACCESSIBLE`, `WRITABLE`, `NO_EXECUTE`).
+  - Allocates and maps an isolated 32 KiB user stack at `0x0000_7FFF_FFFF_0000`.
+- **Ring 3 Drop Mechanism (`enter_user_mode`)**:
+  - Configures `RSP0` in the TSS.
+  - Executes `user_jump_trampoline` which constructs an `iretq` frame (`SS=0x1B`, `RSP=user_stack_top`, `RFLAGS=0x202`, `CS=0x23`, `RIP=entry_point`) and transitions processor to CPL 3.
+  - Added high-level `spawn_user_process(path)` to execute ELF binaries stored on `RamFs` or `LukeFs`.
+
+#### 4. Interactive Shell Enhancements (`kernel/src/shell.rs`)
+- Added `exec <path>` / `run <path>`: Loads and executes ELF binaries in Ring 3.
+- Added `syscall-test`: Tests inline `syscall` instruction dispatch and verifies kernel execution and return value in RAX.
+
+---
+
+### [2026-10-03] Phase 3: Storage, Extensible VFS Architecture & Persistent LukeFs
+
+#### 1. Extensible VFS Core (`kernel/src/vfs.rs`)
+- **Mount Point Registry (`MountTable`)**: Replaced single-root filesystem static with a multi-mount table supporting root (`/`) and arbitrary mount points (e.g. `/disk`, `/mnt`).
+- **Path Resolution & Normalization**:
+  - `normalize_path(path)`: Resolves `.`, `..`, and redundant slashes for canonical path representations.
+  - `resolve_path(path)`: Longest-prefix match across mount points traversing to child filesystem root inodes.
+- **FileHandle & Stdio-like Operations**:
+  - `OpenFlags`: Configurable access flags (`read`, `write`, `create`, `truncate`, `append`).
+  - `FileHandle`: Automatic cursor offset tracking with `read()`, `write()`, `seek(SeekFrom)`, and `sync()`.
+  - High-level VFS functions: `vfs::open()`, `vfs::mkdir()`, `vfs::unlink()`, `vfs::mount()`, `vfs::unmount()`.
+- **Extended Inode Trait**: Added `truncate()`, `unlink()`, and `sync()` to `Inode` trait with default implementations.
+
+#### 2. Persistent Block Filesystem `LukeFs` (`kernel/src/lukefs.rs`)
+- **On-Disk Layout**:
+  - Sector 0: Superblock magic (`b"LUKEFS01"`).
+  - Sectors 1..8: File allocation table storing up to 126 file records (name, `is_dir`, `size`, `start_sector`, `sector_count`).
+  - Sector 9+: Data cluster sectors on the underlying `BlockDevice`.
+- **Auto-Formatting & Persistence**:
+  - `LukeFs::mount(device)`: Checks for superblock signature; auto-formats new disks or reads existing allocation tables into memory.
+  - Sector allocation & relocation engine: dynamically allocates and grows sector spans on write.
+  - Implements `vfs::FileSystem` and `vfs::Inode` with full read, write, truncate, create, mkdir, unlink, and readdir capabilities.
+- **VirtIO Integration**: Mounted persistently at `/disk` using `VirtIoBlockDevice` on `disk.img`.
+
+#### 3. Enhanced Interactive Shell (`kernel/src/shell.rs`)
+- **Working Directory Tracking (`cwd`)**: Prompt displays current path (`luke-os:/disk> `).
+- **Navigation & Path Operations**:
+  - `pwd`: Prints current working directory.
+  - `cd <path>`: Changes working directory with validation.
+  - `ls [path]`: Lists files and directories relative to `cwd` or by absolute path.
+  - `cat <path>`: Displays contents of files in `RamFs` or `LukeFs`.
+  - `touch <path>`: Creates empty files at target path.
+  - `mkdir <path>`: Creates directories at target path.
+  - `rm <path>`: Unlinks and deletes files or directories.
+  - `write <path> <text...>`: Writes text directly to persistent or ramfs files.
+  - `sync`: Flushes dirty file buffers and metadata to disk.
+
+---
+
+### [2026-10-03] Phase 2: Input Subsystem & Interactive Kernel Shell
+
+#### 1. Interrupt-Safe Keyboard Ring Buffer (`kernel/src/keyboard.rs`)
+- **Decoupled Interrupt Handling**: Modified `keyboard_interrupt_handler` in `kernel/src/interrupts.rs` to stop printing raw decoded characters directly to serial/screen. Scancodes from PS/2 port `0x60` are decoded via `pc-keyboard` and pushed into an interrupt-safe FIFO ring buffer (`INPUT_BUFFER`).
+- **Input Queuing & Non-blocking/Blocking APIs**:
+  - `push_char(ch: char)`: Pushes a character into the 256-character FIFO buffer, dropping the oldest unread character on saturation.
+  - `pop_char() -> Option<char>`: Non-blocking character fetch.
+  - `read_char() -> char`: Blocking character fetch that cooperatively yields execution (`scheduler::yield_now()`) when the input buffer is empty.
+  - `read_line() -> String`: Line buffer with interactive echo to stdout, handling carriage return (`\r`), newline (`\n`), and backspace (`\x08`).
+
+#### 2. Framebuffer Console Enhancements (`kernel/src/vga.rs`)
+- **Backspace Support**: Added handling for `\x08` in `Writer::write_char()`, moving the cursor backward (with line wrapping) and clearing character pixel glyphs with background color via `clear_char()`.
+- **Screen Clearing**: Added `clear_screen()` to clear the complete framebuffer buffer to black and reset the cursor position to `(0, 0)`.
+
+#### 3. Interactive Kernel Shell (`kernel/src/shell.rs`)
+- **Dedicated Shell Thread**: Spawned `"shell"` as a managed kernel thread running `shell::shell_main()`.
+- **Builtin Commands**:
+  - `help`: Lists all supported shell commands.
+  - `clear`: Clears the framebuffer console.
+  - `mem`: Inspects physical frame allocator statistics (total, used, free memory) and kernel heap metrics (`allocator::heap_size()`, `allocator::heap_used()`, `allocator::heap_free()`).
+  - `ps` / `threads`: Queries the multi-core work-stealing scheduler (`scheduler::list_threads()`) displaying TID, thread name, state, and assigned CPU core.
+  - `lspci`: Enumerates all PCI devices discovered on the PCI bus with vendor and device IDs.
+  - `ls [path]`: Lists files and directories in the VFS with `[DIR]` and `[FILE]` type badges.
+  - `cat <path>`: Reads and prints text files from VFS nodes.
+  - `touch <name>`: Creates a file in the root directory.
+  - `mkdir <name>`: Creates a directory in the root directory.
+  - `echo [text]`: Echoes parameters back to console.
+  - `uname`: Displays operating system version and kernel architecture.
+
+---
 
 ### [2026-10-03] Phase 1: Core Architecture, Memory Allocators & SMP Bringup
 
@@ -37,13 +158,14 @@ This document serves as the persistent progress log and architectural changelog 
 - **Heap Diagnostics**: Added `heap_size()`, `heap_used()`, and `heap_free()` queries.
 
 #### 3. Symmetric Multiprocessing (SMP) Bringup
-- **ACPI Discovery (`kernel/src/acpi.rs`)**: Parses RSDP, RSDT/XSDT, and the Multiple APIC Description Table (MADT) to discover the Local APIC MMIO address and enumerate secondary processor cores.
-- **Local APIC (`kernel/src/apic.rs`)**: MSR-based LAPIC enablement, timer configuration, EOI signaling, and Inter-Processor Interrupt (IPI) dispatch.
-- **Per-Core GDT & TSS (`kernel/src/gdt.rs`)**: Configured per-core descriptor tables and dedicated Double Fault Interrupt Stack Tables for up to 8 CPU cores.
+- **ACPI Discovery (`kernel/src/acpi.rs`)**: Parses RSDP, RSDT/XSDT, and the Multiple APIC Description Table (MADT) to discover the Local APIC MMIO address and enumerate secondary processor cores. Utilizes `core::ptr::read_unaligned` to safely parse ACPI tables situated at unaligned BIOS physical addresses.
+- **Local APIC (`kernel/src/apic.rs`)**: MSR-based LAPIC enablement, timer configuration (vector `0x20`), EOI signaling, and Inter-Processor Interrupt (IPI) dispatch (INIT, SIPI, reschedule vector `0xEC`).
+- **Per-Core GDT & TSS (`kernel/src/gdt.rs`)**: Overcame the 8-slot capacity limit of `x86_64::structures::gdt::GlobalDescriptorTable` by allocating an independent `CPU_GDTS` array of descriptor tables (Code, Data, TSS) and dedicated Double Fault Interrupt Stack Tables for up to 8 CPU cores.
 - **Application Processor (AP) Bootloader (`kernel/src/smp.rs`)**:
   - Identity-maps a low-memory 16-bit real-mode to 64-bit long-mode trampoline page at physical address `0x8000`.
-  - Dispatches INIT-SIPI-SIPI sequences to wake APs.
+  - Dispatches INIT-SIPI-SIPI sequences to wake APs into long mode.
   - Sets up per-core `PerCpu` structures and configures `IA32_GS_BASE` for thread-local core state.
+- **Release-Optimized Boot Packaging (`runner/build.rs`)**: Prioritizes release kernel builds (202 KiB) over unoptimized debug kernels (8.8 MiB), reducing BIOS disk loading time from >15 seconds down to under 100ms.
 - **Runner Configuration (`runner/src/main.rs`)**: Configured QEMU launcher with `-smp 4`.
 
 #### 4. Synchronization Primitives (`kernel/src/sync.rs`)

@@ -351,6 +351,19 @@ pub fn init(framebuffer: &'static mut bootloader_api::info::FrameBuffer) {
     ROW.store(0, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Clears the entire framebuffer console to black and resets cursor to (0, 0).
+pub fn clear_screen() {
+    let mut guard = FB_INFO.lock();
+    if let Some(fb) = guard.as_mut() {
+        let total_bytes = fb.rows * font::GLYPH_HEIGHT * fb.pitch;
+        unsafe {
+            core::ptr::write_bytes(fb.buffer, 0, total_bytes);
+        }
+    }
+    COL.store(0, core::sync::atomic::Ordering::Relaxed);
+    ROW.store(0, core::sync::atomic::Ordering::Relaxed);
+}
+
 fn put_pixel(fb: &FbInfo, x: usize, y: usize, r: u8, g: u8, b: u8) {
     if x >= fb.width || y >= fb.height {
         return;
@@ -379,6 +392,17 @@ fn draw_char(fb: &FbInfo, ch: char, col: usize, row: usize) {
                 (BG_R, BG_G, BG_B)
             };
             put_pixel(fb, x0 + dx, y0 + dy, r, g, b);
+        }
+    }
+}
+
+fn clear_char(fb: &FbInfo, col: usize, row: usize) {
+    let x0 = col * font::GLYPH_WIDTH;
+    let y0 = row * font::GLYPH_HEIGHT;
+
+    for dy in 0..font::GLYPH_HEIGHT {
+        for dx in 0..font::GLYPH_WIDTH {
+            put_pixel(fb, x0 + dx, y0 + dy, BG_R, BG_G, BG_B);
         }
     }
 }
@@ -417,6 +441,20 @@ impl Writer {
             '\n' => {
                 col = 0;
                 row += 1;
+            }
+            '\r' => {
+                col = 0;
+            }
+            '\x08' => {
+                // Backspace
+                if col > 0 {
+                    col -= 1;
+                    clear_char(fb, col, row);
+                } else if row > 0 {
+                    row -= 1;
+                    col = fb.cols.saturating_sub(1);
+                    clear_char(fb, col, row);
+                }
             }
             ch => {
                 if col >= fb.cols {

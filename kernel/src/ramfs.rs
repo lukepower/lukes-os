@@ -19,6 +19,10 @@ impl RamFs {
 }
 
 impl FileSystem for RamFs {
+    fn fs_type(&self) -> &'static str {
+        "ramfs"
+    }
+
     fn root(&self) -> Arc<dyn Inode> {
         self.root.clone()
     }
@@ -98,6 +102,17 @@ impl Inode for RamNode {
         }
     }
 
+    fn truncate(&self, size: u64) -> Result<()> {
+        let mut inner = self.inner.write();
+        match &mut *inner {
+            RamNodeInner::File { content } => {
+                content.resize(size as usize, 0);
+                Ok(())
+            }
+            RamNodeInner::Directory { .. } => Err(VfsError::IsADirectory),
+        }
+    }
+
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
         let inner = self.inner.read();
         match &*inner {
@@ -134,6 +149,16 @@ impl Inode for RamNode {
                 let node = Arc::new(RamNode::new_dir());
                 children.insert(name.to_string(), node.clone());
                 Ok(node)
+            }
+            RamNodeInner::File { .. } => Err(VfsError::NotADirectory),
+        }
+    }
+
+    fn unlink(&self, name: &str) -> Result<()> {
+        let mut inner = self.inner.write();
+        match &mut *inner {
+            RamNodeInner::Directory { children } => {
+                children.remove(name).map(|_| ()).ok_or(VfsError::NotFound)
             }
             RamNodeInner::File { .. } => Err(VfsError::NotADirectory),
         }

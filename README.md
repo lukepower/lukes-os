@@ -54,14 +54,39 @@
   - Safe deferred zombie reaping (`sched.dead`), preventing stack use-after-free on thread termination.
   - Sleeping thread queues via `scheduler::sleep(ticks)`.
 
-### 4. Display & Serial Output
-- **Framebuffer Console (`kernel/src/vga.rs`)**: Pixel-rendered text console with custom 8x16 font, screen scrolling, ASCII, and extended European characters (`ä`, `ö`, `ü`, `ß`, `€`, `°`).
+### 4. Display, Input & Interactive Shell
+- **Framebuffer Console (`kernel/src/vga.rs`)**: Pixel-rendered text console with custom 8x16 font, screen scrolling, backspace (`\x08`), `clear_screen()`, ASCII, and extended European characters (`ä`, `ö`, `ü`, `ß`, `€`, `°`).
+- **Interrupt-Safe Keyboard Subsystem (`kernel/src/keyboard.rs`)**:
+  - Decoupled PS/2 IRQ1 driver decoding scancodes into an interrupt-safe FIFO ring buffer.
+  - Blocking and non-blocking input APIs (`read_char`, `read_line`) with cooperative yielding to the multi-core scheduler.
+- **Interactive Kernel Shell (`kernel/src/shell.rs`)**:
+  - Dedicated `"shell"` kernel task running interactive command-line interface.
+  - Builtin commands: `help`, `clear`, `mem` (physical and heap statistics), `ps`/`threads` (active threads across cores), `lspci` (PCI device discovery), `ls`, `cat`, `touch`, `mkdir` (VFS navigation & file inspection), `echo`, `uname`.
 - **Serial Logger (`kernel/src/serial.rs`)**: COM1 UART logger (`0x3F8`) allowing headless debugging and automated test logs via `serial_println!`.
 
-### 5. Storage & Virtual File System (VFS)
-- **PCI Scanner (`kernel/src/pci.rs`)**: Configuration-space scanner probing bus 0 for devices.
-- **VirtIO Block Driver (`kernel/src/virtio_blk.rs`)**: Block device driver built on `virtio-drivers 0.12`.
-- **VFS & RamFS (`kernel/src/vfs.rs`, `kernel/src/ramfs.rs`)**: `Inode` and `FileSystem` traits with an in-memory RamFS mounted at `/`.
+### 5. Storage, Extensible VFS & Persistent LukeFs
+- **PCI Bus Scanner (`kernel/src/pci.rs`)**: Configuration-space scanner discovering PCI peripherals and VirtIO devices.
+- **VirtIO Block Driver (`kernel/src/virtio_blk.rs`)**: 512-byte sector block driver implementing `BlockDevice`.
+- **Extensible Virtual File System (`kernel/src/vfs.rs`)**:
+  - Global `MountTable` registry supporting root (`/`) and multiple mount points (`/disk`).
+  - Path canonicalization with `normalize_path` resolving `.` and `..`.
+  - Stdio-like `FileHandle` with `OpenFlags` (`read`, `write`, `create`, `truncate`, `append`) and `SeekFrom`.
+  - Comprehensive filesystem abstraction ready for pluggable third-party drivers (`fat32`, `ext2`, `tarfs`).
+- **RamFS (`kernel/src/ramfs.rs`)**: In-memory volatile filesystem mounted at `/` hosting `/tmp`, `/dev`, and `/proc`.
+- **Persistent LukeFs (`kernel/src/lukefs.rs`)**:
+  - Custom block-backed filesystem mounted persistently at `/disk` on the VirtIO block device.
+  - Superblock verification, automatic formatting, allocation table management, and dynamic sector growth.
+
+### 6. User Space, Fast System Calls & ELF Loader
+- **Privilege Rings & TSS RSP0 (`kernel/src/gdt.rs`)**: User mode descriptors (DPL 3) with dynamic TSS `privilege_stack_table[0]` updates providing dedicated kernel stack recovery on Ring 3 transitions.
+- **Hardware-Accelerated Syscalls (`kernel/src/syscall.rs`)**:
+  - `EFER.SCE`, `LSTAR`, `STAR`, and `FMASK` MSR configuration for low-overhead `SYSCALL`/`SYSRET` transitions.
+  - Naked assembly entry (`syscall_entry`) with `swapgs` per-CPU stack switching and full user register preservation.
+  - POSIX-compatible system call numbers: `sys_yield` (0), `sys_exit` (1), `sys_write` (2), `sys_read` (3), `sys_open` (4), `sys_getpid` (6), `sys_uname` (7).
+- **ELF64 Executable Loader (`kernel/src/elf.rs`)**:
+  - Parses ELF64 binary format, validates magic and headers, and maps `PT_LOAD` segments with paging flags.
+  - Allocates and maps 32 KiB user stack at `0x0000_7FFF_FFFF_0000`.
+  - `enter_user_mode` executes `iretq` frame transition to drop into Ring 3 with User Code/Data segments.
 
 ---
 
@@ -79,16 +104,20 @@ lukes-os/
 │       ├── allocator.rs     # 4 MiB dynamic heap allocator & diagnostics
 │       ├── apic.rs          # Local APIC driver & IPI handling
 │       ├── block.rs         # Unified BlockDevice trait
+│       ├── elf.rs           # ELF64 executable loader & user-mode launcher
 │       ├── gdt.rs           # Per-core GDT, TSS, and IST setup
 │       ├── interrupts.rs    # IDT handlers, LAPIC timer vector, PIC mask
-│       ├── keyboard.rs      # PS/2 scancode decoder
+│       ├── keyboard.rs      # PS/2 scancode decoder & ring buffer queue
+│       ├── lukefs.rs        # Persistent block-backed filesystem driver
 │       ├── memory.rs        # O(1) contiguous frame allocator & paging
 │       ├── pci.rs           # PCI bus scanner
 │       ├── ramfs.rs         # In-memory filesystem implementation
 │       ├── scheduler.rs     # Preemptive timer ISR & scheduler
 │       ├── serial.rs        # COM1 16550 UART driver & macros
+│       ├── shell.rs         # Interactive kernel shell task & builtins
 │       ├── smp.rs           # AP trampoline, PerCpu, and multi-core boot
 │       ├── sync.rs          # TicketLock, WaitQueue & SleepingMutex
+│       ├── syscall.rs       # Fast MSR-based SYSCALL/SYSRET dispatcher
 │       ├── thread.rs        # Thread state, stack context & switch_context
 │       ├── vfs.rs           # VFS abstraction traits (Inode, FileSystem)
 │       ├── vga.rs           # Framebuffer text console with bitmap font
