@@ -372,17 +372,24 @@ pub fn render_frame(bb: &mut BackBuffer) {
             tab_x += 126;
         }
 
-        // System uptime clock on right side of taskbar
-        let ticks = crate::interrupts::ticks();
-        let seconds = ticks / 100; // approximate
-        let minutes = seconds / 60;
-        let sec_rem = seconds % 60;
+        // Clock on right side of taskbar (RTC wall clock or uptime fallback)
+        let (rtc_h, rtc_m, _) = crate::interrupts::read_rtc_time();
+        let (display_h, display_m) = if rtc_h == 0 && rtc_m == 0 {
+            let ticks = crate::interrupts::ticks();
+            let seconds = ticks / 100;
+            let minutes = (seconds / 60) % 60;
+            let hours = (seconds / 3600) % 24;
+            (hours as u8, minutes as u8)
+        } else {
+            (rtc_h, rtc_m)
+        };
+
         let mut time_str = [b'0'; 5];
-        time_str[0] = b'0' + ((minutes / 10) % 10) as u8;
-        time_str[1] = b'0' + (minutes % 10) as u8;
+        time_str[0] = b'0' + ((display_h / 10) % 10);
+        time_str[1] = b'0' + (display_h % 10);
         time_str[2] = b':';
-        time_str[3] = b'0' + ((sec_rem / 10) % 10) as u8;
-        time_str[4] = b'0' + (sec_rem % 10) as u8;
+        time_str[3] = b'0' + ((display_m / 10) % 10);
+        time_str[4] = b'0' + (display_m % 10);
         if let Ok(clock_s) = core::str::from_utf8(&time_str) {
             let clock_x = screen_w as i32 - 60;
             draw_string(bb, clock_s, clock_x, taskbar_y + 6, TASKBAR_TEXT, None);
@@ -482,8 +489,112 @@ pub fn handle_input_events() {
                     if pressed {
                         let mx = wm.cursor_x;
                         let my = wm.cursor_y;
+                        let taskbar_y = wm.screen_height - TASKBAR_HEIGHT;
 
-                        // Check hit on windows from top (highest z) to bottom
+                        let menu_w = 140u32;
+                        let menu_h = 100u32;
+                        let menu_rect = Rect::new(4, taskbar_y - menu_h as i32, menu_w, menu_h);
+                        let start_btn = Rect::new(4, taskbar_y + 3, 100, TASKBAR_HEIGHT as u32 - 6);
+
+                        // 1. If start menu is open, handle click inside menu or outside
+                        if wm.start_menu_open {
+                            if menu_rect.contains_point(mx, my) {
+                                // Item 0..3: each item is ~22px height starting at menu_rect.y + 4
+                                let rel_y = (my - menu_rect.y).saturating_sub(4);
+                                let item_idx = (rel_y / 22) as usize;
+                                wm.start_menu_open = false;
+                                match item_idx {
+                                    0 => {
+                                        crate::scheduler::spawn("spawn-clock", || {
+                                            let _ = crate::elf::spawn_user_process("/bin/clock");
+                                        });
+                                    }
+                                    1 => {
+                                        crate::scheduler::spawn("spawn-paint", || {
+                                            let _ = crate::elf::spawn_user_process("/bin/paint");
+                                        });
+                                    }
+                                    2 => {
+                                        crate::scheduler::spawn("spawn-files", || {
+                                            let _ = crate::elf::spawn_user_process("/bin/files");
+                                        });
+                                    }
+                                    3 => {
+                                        // Inline window creation directly inside wm to avoid re-locking WM
+                                        let new_id = wm.next_id;
+                                        wm.next_id += 1;
+                                        let z = wm.windows.len() as u32;
+                                        let mut win = Window::new(new_id, String::from("About Luke's OS"), Rect::new(200, 160, 360, 180), true);
+                                        win.z = z;
+                                        win.content.fill(0x001E293B);
+                                        let cw = win.content_width as usize;
+                                        let ch = win.content_height as usize;
+                                        let lines = [
+                                            "============================",
+                                            "        Luke's OS           ",
+                                            "     Version 0.3.0 GUI      ",
+                                            "============================",
+                                            "",
+                                            " • 64-bit SMP Multiprocessing",
+                                            " • Preemptive Work-Stealing  ",
+                                            " • Kernel Window Compositor  ",
+                                            " • PS/2 Mouse & Keyboard     ",
+                                        ];
+                                        for (line_idx, line) in lines.iter().enumerate() {
+                                            let y0 = 12 + line_idx * 16;
+                                            for (char_idx, c) in line.chars().enumerate() {
+                                                let glyph = crate::vga::font::glyph(c);
+                                                let x0 = 12 + char_idx * 8;
+                                                for (dy, &glyph_row) in glyph.iter().enumerate() {
+                                                    let py = y0 + dy;
+                                                    if py >= ch { continue; }
+                                                    for dx in 0..8 {
+                                                        let px = x0 + dx;
+                                                        if px >= cw { continue; }
+                                                        if (glyph_row >> (7 - dx)) & 1 != 0 {
+                                                            win.content[py * cw + px] = 0x00F8FAFC;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        wm.windows.push(win);
+                                        wm.focused_window = Some(new_id);
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            } else if start_btn.contains_point(mx, my) {
+                                // Toggle closed
+                                wm.start_menu_open = false;
+                                continue;
+                            } else {
+                                // Clicked elsewhere: close menu and allow click through
+                                wm.start_menu_open = false;
+                            }
+                        }
+
+                        // 2. Check Start button click
+                        if start_btn.contains_point(mx, my) {
+                            wm.start_menu_open = !wm.start_menu_open;
+                            continue;
+                        }
+
+                        // 3. Check taskbar window tabs
+                        if my >= taskbar_y {
+                            let mut tab_x = 112;
+                            for win in wm.windows.iter() {
+                                let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
+                                if tab_rect.contains_point(mx, my) {
+                                    wm.focused_window = Some(win.id);
+                                    break;
+                                }
+                                tab_x += 126;
+                            }
+                            continue;
+                        }
+
+                        // 4. Check hit on windows from top (highest z) to bottom
                         let mut clicked_win_idx = None;
                         let mut clicked_close = false;
                         let mut clicked_titlebar = false;
@@ -550,62 +661,6 @@ pub fn handle_input_events() {
                                             b: my - c_rect.y,
                                             c: 0,
                                         });
-                                    }
-                                }
-                            }
-                        } else {
-                            // Check Start Menu click if open
-                            let taskbar_y = wm.screen_height - TASKBAR_HEIGHT;
-
-                            let mut clicked_menu_item = false;
-                            if wm.start_menu_open {
-                                let menu_w = 140u32;
-                                let menu_h = 100u32;
-                                let menu_rect = Rect::new(4, taskbar_y - menu_h as i32, menu_w, menu_h);
-                                if menu_rect.contains_point(mx, my) {
-                                    clicked_menu_item = true;
-                                    let item_idx = (my - menu_rect.y) / 24;
-                                    wm.start_menu_open = false;
-                                    match item_idx {
-                                        0 => {
-                                            crate::scheduler::spawn("spawn-clock", || {
-                                                let _ = crate::elf::spawn_user_process("/bin/clock");
-                                            });
-                                        }
-                                        1 => {
-                                            crate::scheduler::spawn("spawn-paint", || {
-                                                let _ = crate::elf::spawn_user_process("/bin/paint");
-                                            });
-                                        }
-                                        2 => {
-                                            crate::scheduler::spawn("spawn-files", || {
-                                                let _ = crate::elf::spawn_user_process("/bin/files");
-                                            });
-                                        }
-                                        3 => {
-                                            let _ = crate::gfx::wm::create_window("About Luke's OS", 200, 160, 360, 180, true);
-                                        }
-                                        _ => {}
-                                    }
-                                } else {
-                                    wm.start_menu_open = false;
-                                }
-                            }
-
-                            if !clicked_menu_item && my >= taskbar_y {
-                                // Check Start button click
-                                let start_btn = Rect::new(4, taskbar_y + 3, 100, TASKBAR_HEIGHT as u32 - 6);
-                                if start_btn.contains_point(mx, my) {
-                                    wm.start_menu_open = !wm.start_menu_open;
-                                } else {
-                                    let mut tab_x = 112;
-                                    for win in wm.windows.iter() {
-                                        let tab_rect = Rect::new(tab_x, taskbar_y + 3, 120, TASKBAR_HEIGHT as u32 - 6);
-                                        if tab_rect.contains_point(mx, my) {
-                                            wm.focused_window = Some(win.id);
-                                            break;
-                                        }
-                                        tab_x += 126;
                                     }
                                 }
                             }

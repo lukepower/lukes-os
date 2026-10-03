@@ -19,8 +19,13 @@ pub struct ThreadInfo {
 static BLOCKED_THREADS: TicketLock<BTreeMap<ThreadId, Box<Thread>>> =
     TicketLock::new(BTreeMap::new());
 static NEXT_SPAWN_CORE: AtomicUsize = AtomicUsize::new(0);
+static KERNEL_PML4_FRAME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-pub fn init() {}
+pub fn init() {
+    use x86_64::registers::control::Cr3;
+    let (pml4, _) = Cr3::read();
+    KERNEL_PML4_FRAME.store(pml4.start_address().as_u64(), Ordering::Relaxed);
+}
 
 pub fn spawn(name: &'static str, entry: fn()) {
     let mut thread = Box::new(Thread::new(name, entry));
@@ -213,6 +218,10 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
     percpu.ticks += 1;
     let my_core = percpu.core_id;
 
+    if my_core == 0 {
+        crate::interrupts::tick();
+    }
+
     if let Some(mut cur) = percpu.current_thread.take() {
         cur.saved_rsp = current_rsp;
 
@@ -286,6 +295,19 @@ extern "C" fn schedule_tick(current_rsp: u64) -> u64 {
             if current_cr3 != pml4 {
                 unsafe {
                     Cr3::write(pml4, Cr3Flags::empty());
+                }
+            }
+        }
+    } else {
+        let kernel_pml4_addr = KERNEL_PML4_FRAME.load(Ordering::Relaxed);
+        if kernel_pml4_addr != 0 {
+            let (current_cr3, _) = Cr3::read();
+            if current_cr3.start_address().as_u64() != kernel_pml4_addr {
+                let kernel_frame = x86_64::structures::paging::PhysFrame::containing_address(
+                    x86_64::PhysAddr::new(kernel_pml4_addr)
+                );
+                unsafe {
+                    Cr3::write(kernel_frame, Cr3Flags::empty());
                 }
             }
         }

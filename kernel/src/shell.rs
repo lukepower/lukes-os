@@ -415,46 +415,49 @@ fn cmd_text() {
 fn cmd_about() {
     let win_id = crate::gfx::wm::create_window("About Luke's OS", 240, 160, 360, 200, true);
     // Draw some text in the about window content buffer
-    let mut wm = crate::gfx::wm::WM.lock();
-    if let Some(win) = wm.windows.iter_mut().find(|w| w.id == win_id) {
-        win.content.fill(0x001E293B); // Slate dark blue
-        let w = win.content_width as usize;
-        let h = win.content_height as usize;
+    {
+        let mut wm = crate::gfx::wm::WM.lock();
+        if let Some(win) = wm.windows.iter_mut().find(|w| w.id == win_id) {
+            win.content.fill(0x001E293B); // Slate dark blue
+            let w = win.content_width as usize;
+            let h = win.content_height as usize;
 
-        let lines = [
-            "============================",
-            "        Luke's OS           ",
-            "     Version 0.3.0 GUI      ",
-            "============================",
-            "",
-            " • 64-bit SMP Multiprocessing",
-            " • Preemptive Work-Stealing  ",
-            " • Kernel Window Compositor  ",
-            " • PS/2 Mouse & Keyboard     ",
-            " • Extensible VFS & LukeFs   ",
-        ];
+            let lines = [
+                "============================",
+                "        Luke's OS           ",
+                "     Version 0.3.0 GUI      ",
+                "============================",
+                "",
+                " • 64-bit SMP Multiprocessing",
+                " • Preemptive Work-Stealing  ",
+                " • Kernel Window Compositor  ",
+                " • PS/2 Mouse & Keyboard     ",
+                " • Extensible VFS & LukeFs   ",
+            ];
 
-        for (line_idx, line) in lines.iter().enumerate() {
-            let y0 = 16 + line_idx * 16;
-            for (char_idx, ch) in line.chars().enumerate() {
-                let glyph = crate::vga::font::glyph(ch);
-                let x0 = 16 + char_idx * 8;
-                for (dy, &glyph_row) in glyph.iter().enumerate() {
-                    let py = y0 + dy;
-                    if py >= h {
-                        continue;
-                    }
-                    for dx in 0..8 {
-                        let px = x0 + dx;
-                        if px >= w {
+            for (line_idx, line) in lines.iter().enumerate() {
+                let y0 = 16 + line_idx * 16;
+                for (char_idx, ch) in line.chars().enumerate() {
+                    let glyph = crate::vga::font::glyph(ch);
+                    let x0 = 16 + char_idx * 8;
+                    for (dy, &glyph_row) in glyph.iter().enumerate() {
+                        let py = y0 + dy;
+                        if py >= h {
                             continue;
                         }
-                        if (glyph_row >> (7 - dx)) & 1 != 0 {
-                            win.content[py * w + px] = 0x00F8FAFC;
+                        for dx in 0..8 {
+                            let px = x0 + dx;
+                            if px >= w {
+                                continue;
+                            }
+                            if (glyph_row >> (7 - dx)) & 1 != 0 {
+                                win.content[py * w + px] = 0x00F8FAFC;
+                            }
                         }
                     }
                 }
             }
+            win.dirty = true;
         }
     }
     crate::println!("Opened About window (id={})", win_id);

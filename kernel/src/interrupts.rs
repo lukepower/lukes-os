@@ -143,3 +143,49 @@ pub fn unmask_mouse() {
         slave_port.write(slave_mask & !(1 << 4));
     }
 }
+
+/// Read current time from CMOS RTC: returns (hours, minutes, seconds).
+/// Handles BCD and 12/24 hour formats.
+pub fn read_rtc_time() -> (u8, u8, u8) {
+    use x86_64::instructions::port::Port;
+
+    unsafe {
+        let mut cmos_addr = Port::<u8>::new(0x70);
+        let mut cmos_data = Port::<u8>::new(0x71);
+
+        let read_register = |reg: u8, addr: &mut Port<u8>, data: &mut Port<u8>| -> u8 {
+            addr.write(reg);
+            data.read()
+        };
+
+        // Wait until RTC update is not in progress (Register A, bit 7)
+        loop {
+            let status_a = read_register(0x0A, &mut cmos_addr, &mut cmos_data);
+            if (status_a & 0x80) == 0 {
+                break;
+            }
+        }
+
+        let mut sec = read_register(0x00, &mut cmos_addr, &mut cmos_data);
+        let mut min = read_register(0x02, &mut cmos_addr, &mut cmos_data);
+        let mut hour = read_register(0x04, &mut cmos_addr, &mut cmos_data);
+        let register_b = read_register(0x0B, &mut cmos_addr, &mut cmos_data);
+
+        // Convert BCD to binary if bit 2 of Register B is 0
+        let is_bcd = (register_b & 0x04) == 0;
+        if is_bcd {
+            sec = ((sec >> 4) * 10) + (sec & 0x0F);
+            min = ((min >> 4) * 10) + (min & 0x0F);
+            hour = (((hour & 0x70) >> 4) * 10) + (hour & 0x0F) | (hour & 0x80);
+        }
+
+        // Convert 12 hour to 24 hour if needed (bit 1 of Register B is 0)
+        let is_24h = (register_b & 0x02) != 0;
+        if !is_24h && (hour & 0x80) != 0 {
+            hour = ((hour & 0x7F) + 12) % 24;
+        }
+
+        (hour % 24, min % 60, sec % 60)
+    }
+}
+
