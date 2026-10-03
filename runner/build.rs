@@ -16,10 +16,18 @@ fn main() {
             .join("x86_64-unknown-none")
             .join("debug")
             .join("kernel");
-        if release.exists() {
-            release
-        } else {
-            debug
+
+        match (release.metadata().and_then(|m| m.modified()), debug.metadata().and_then(|m| m.modified())) {
+            (Ok(rel_time), Ok(dbg_time)) => {
+                if rel_time > dbg_time {
+                    release
+                } else {
+                    debug
+                }
+            }
+            (Ok(_), Err(_)) => release,
+            (Err(_), Ok(_)) => debug,
+            _ => release,
         }
     };
 

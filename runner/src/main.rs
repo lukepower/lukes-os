@@ -55,6 +55,7 @@ fn main() {
             "build",
             "--target",
             "x86_64-unknown-none",
+            "--release",
             "--package",
             "kernel",
         ])
